@@ -1,0 +1,65 @@
+# API sketch, not executable Neri. See README.md for unsupported features.
+use sumi
+use host
+use ConsoleInteraction
+
+class GreetingService
+  private prefix: String = ""
+
+  def init(prefix: String): Void
+    this.prefix = prefix
+  end
+
+  def greet(name: String): String
+    return this.prefix + name
+  end
+end
+
+def application(greetings: GreetingService): App
+  let app = App()
+
+  # Proposed closure syntax. Request and continuation types come from around.
+  app.around(fn(request, next)
+    let response = next(request)
+    ConsoleInteraction.println(request.path + " -> " + (response.status as String))
+    return response
+  end)
+
+  # No parameter or return annotations repeated at the call site.
+  app.get("/", fn(request)
+    return text("Hello, Sumi!")
+  end)
+
+  # A typed application dependency is captured, not looked up by string key.
+  app.get("/hello/:name", fn(request)
+    let name = request.param("name")
+    if name == null
+      return text("Missing name", 400)
+    end
+    return text(greetings.greet(name))
+  end)
+
+  # Parsing and domain validation are distinct, visible operations.
+  app.get("/square/:value", fn(request)
+    let raw = request.param("value")
+    if raw == null
+      return text("Missing value", 400)
+    end
+    let value = host.parseInt(raw)
+    if value == null
+      return text("Expected an integer", 400)
+    end
+    if value < -1000 || value > 1000
+      return text("Expected an integer between -1000 and 1000", 400)
+    end
+    return text((value * value) as String)
+  end)
+
+  return app
+end
+
+def main(): Void
+  let app = application(GreetingService("Hello, "))
+  let response = app.handle(Request("GET", "/hello/Ada"))
+  ConsoleInteraction.println(response.body)
+end
