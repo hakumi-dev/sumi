@@ -19,9 +19,9 @@ scripts/check-compatibility.sh
 reports that path, launcher SHA-256, and version. The launcher hash identifies
 that file, not every compiler, runtime, or standard-library component.
 
-The compile-only check builds all declared framework source sets and the native
+The compile-only check builds declared framework units and the native
 CLI without starting a listener. A failure preserves the compiler diagnostic and
-adds the failed source set and compatibility guidance. It proves compilation,
+adds the failed unit and compatibility guidance. It proves compilation,
 not runtime behavior.
 
 The full check runs the behavior suite in Debug and Release: routing and
@@ -36,7 +36,7 @@ prove a compiler defect.
 
 | Boundary | Required behavior |
 | --- | --- |
-| Projects | `build` and `run` with `--project` and named `--source-set`; explicit source paths; Debug and Release native executables. |
+| Projects | `build` and `run` with `--project` and named `--unit`; v2 source directories, explicit files, exclusions, and references; Debug and Release native executables. |
 | Language | Classes, nullable values with narrowing, arrays, contextual callbacks, trailing `do` blocks, and managed captured state that survives its declaring call. |
 | Host | UTF-8 text reads and writes, byte inspection and boundary-safe slicing, integer parsing, absolute paths, arguments, process environment, synchronous child execution with argument arrays and exit status. |
 | Clock | `clock.milliseconds()` returns an optional millisecond reading suitable for elapsed durations. A missing reading is reported as duration `-1`. |

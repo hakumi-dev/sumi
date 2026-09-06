@@ -16,4 +16,4 @@ export NERI="$(command -v "$SUMI_COMPILER")"
 if [[ "$NERI" != /* ]]; then
   export NERI="$(cd -- "$(dirname -- "$NERI")" && pwd -P)/$(basename -- "$NERI")"
 fi
-exec "$NERI" run --project "$SUMI_HOME/neri.json" --source-set cli -- "$@"
+exec "$NERI" run --project "$SUMI_HOME/neri.json" --unit cli -- "$@"

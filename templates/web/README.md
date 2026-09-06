@@ -9,9 +9,10 @@ sumi build --release
 The server listens on `127.0.0.1:8080`. Use `--port` to select another port.
 `server` and `test` have the short aliases `s` and `t`.
 
-`neri.json` declares source files. `sumi.conf` selects source sets and the public
-directory. Rename folders by updating those paths; directory names are not
-required by the framework.
+`neri.json` declares library and executable units. Files in `app` and `tests` are
+discovered recursively; `main.hk` is the web entry point. References connect the
+application to the copied Sumi core and HTTP libraries. `sumi.conf` selects the
+server/test units and the public directory.
 
 Optional `.env` and `.env.development`, `.env.test`, or `.env.production` files
 supply configuration. Process variables override file values. Use `--environment`

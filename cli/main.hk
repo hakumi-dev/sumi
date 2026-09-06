@@ -174,7 +174,7 @@ def help(): Void
   console.println("  sumi build | b                 Build the application executable")
   console.println("  sumi console | c               Reserved for a typed application session (requires Neri interactive evaluation)")
   console.println("Options: --project <directory>, --environment/-e <development|test|production>, --port <1..65535> (server), --release (build/test), --output <file> (build)")
-  console.println("Source sets are declared in neri.json; sumi.conf selects server/test sets and the public directory.")
+  console.println("Units are declared in neri.json; sumi.conf selects server/test units and the public directory.")
 end
 
 def main(): Void
@@ -320,7 +320,7 @@ def main(): Void
   args = host.appendString(args, command == "build" ? "build" : "run")
   args = host.appendString(args, "--project")
   args = host.appendString(args, project.root + "/neri.json")
-  args = host.appendString(args, "--source-set")
+  args = host.appendString(args, "--unit")
   args = host.appendString(args, command == "test" ? project.tests : project.server)
   if release
     args = host.appendString(args, "--release")

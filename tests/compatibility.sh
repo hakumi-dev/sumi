@@ -11,7 +11,7 @@ if [[ "$1" == --version ]]; then
   printf 'neri 0.2.0-dev\n'
   exit 0
 fi
-printf 'NR_FIXTURE: named source sets are unavailable\n' >&2
+printf 'NR_FIXTURE: unit selection is unavailable\n' >&2
 exit 2
 COMPILER
 chmod +x "$SUMI_WORK/neri"
@@ -21,6 +21,6 @@ if NERI="$SUMI_WORK/neri" "$SUMI_ROOT/scripts/check-compatibility.sh" --compile-
   exit 1
 fi
 
-grep -qF 'NR_FIXTURE: named source sets are unavailable' "$SUMI_WORK/report"
-grep -qF 'SUMI_COMPAT_BUILD: Cannot build source set contracts.' "$SUMI_WORK/report"
+grep -qF 'NR_FIXTURE: unit selection is unavailable' "$SUMI_WORK/report"
+grep -qF 'SUMI_COMPAT_BUILD: Cannot build unit contracts.' "$SUMI_WORK/report"
 printf 'Sumi compatibility rejection contract passed\n'

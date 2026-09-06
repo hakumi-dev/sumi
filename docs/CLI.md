@@ -1,6 +1,6 @@
 # Sumi CLI
 
-The Sumi CLI creates applications and runs their declared Neri source sets.
+The Sumi CLI creates applications and runs their declared Neri units.
 Its command implementation is written in Neri. A shell launcher locates the
 checkout and compiler. The current development installation supports Linux and
 requires Neri, Bash, and GNU `env`, `mkdir`, `cp`, `test`, and `readlink` utilities.
@@ -20,7 +20,7 @@ an unrelated command. `--bin-dir <directory>` selects another command directory.
 You can also use `bin/sumi` directly without installing it.
 
 `NERI` selects the compiler executable; otherwise the launcher uses `neri` from
-`PATH`. Source compilation requires named project source sets, contextual
+`PATH`. Source compilation requires named project units, contextual
 callbacks, managed captures, host process/file operations, and the HTTP and clock
 standard libraries used by the framework. The CLI forwards compiler diagnostics
 and nonzero exit status. A missing compiler produces `SUMI_CLI_COMPILER`.
@@ -32,8 +32,8 @@ before starting an application.
 | Command | Alias | Behavior |
 | --- | --- | --- |
 | `sumi new <directory>` | `sumi n` | Creates a project in a new directory. |
-| `sumi server` | `sumi s` | Compiles and runs the server source set. |
-| `sumi test` | `sumi t` | Compiles and executes the test source set. |
+| `sumi server` | `sumi s` | Compiles and runs the server unit. |
+| `sumi test` | `sumi t` | Compiles and executes the test unit. |
 | `sumi build` | `sumi b` | Builds the server executable. |
 | `sumi console` | `sumi c` | Reserved; returns an explicit unavailable diagnostic. |
 
@@ -70,11 +70,11 @@ A new project contains:
 ```text
 app/routes.hk        Application construction and route registration
 public/              HTML, CSS, and JavaScript
-main.hk              Startup and diagnostic reporting
+main.hk               Startup and diagnostic reporting
 tests/application.hk Application contracts
 vendor/sumi/         Framework source snapshot
-neri.json            Explicit Neri source sets
-sumi.conf            CLI source-set and public-directory selection
+neri.json            Named v2 units and references
+sumi.conf            CLI unit and public-directory selection
 .env.example         Example local settings
 ```
 
@@ -84,8 +84,9 @@ is generated. Existing destination directories are rejected without overwriting
 their files. If copying fails after creation, the error is reported and the
 incomplete directory remains available for inspection.
 
-Folder names are suggestions. Update source paths in `neri.json` when moving
-files. The required `sumi.conf` uses these keys:
+Folder names are suggestions. New `.hk` files are included by their unit source
+directories. Update unit source paths when moving files. The required
+`sumi.conf` uses these keys:
 
 ```text
 public=public
@@ -97,6 +98,8 @@ Keys and values are literal, without surrounding whitespace. Empty lines and
 lines beginning with `#` are ignored. Unknown keys and empty values are errors.
 Repeated keys use the last value. This file configures the CLI; it is not a
 replacement for application-specific configuration.
+
+The CLI passes the selected name via `--unit`.
 
 Multi-source project roots containing non-ASCII characters currently encounter a
 compiler UTF-8 slicing failure on the tested toolchain. Use an ASCII project path

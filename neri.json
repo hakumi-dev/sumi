@@ -1,63 +1,56 @@
 {
-  "version": 1,
-  "defaultSourceSet": "web",
-  "sourceSets": {
-    "cli": [
-      "cli/main.hk",
-      "src/core/app.hk",
-      "src/core/content.hk",
-      "src/core/environment.hk",
-      "src/core/message.hk",
-      "src/core/middleware.hk",
-      "src/core/path.hk",
-      "src/core/router.hk"
-    ],
-    "web": [
-      "examples/web/main.hk",
-      "examples/web/app/routes.hk",
-      "src/core/app.hk",
-      "src/core/content.hk",
-      "src/core/message.hk",
-      "src/core/middleware.hk",
-      "src/core/path.hk",
-      "src/core/router.hk",
-      "src/http/http.hk",
-      "src/http/logging.hk",
-      "src/core/environment.hk"
-    ],
-    "memory": [
-      "examples/memory.hk",
-      "examples/application.hk",
-      "src/core/app.hk",
-      "src/core/content.hk",
-      "src/core/message.hk",
-      "src/core/middleware.hk",
-      "src/core/path.hk",
-      "src/core/router.hk",
-      "src/core/environment.hk"
-    ],
-    "contracts": [
-      "tests/contracts.hk",
-      "examples/application.hk",
-      "src/core/app.hk",
-      "src/core/content.hk",
-      "src/core/message.hk",
-      "src/core/middleware.hk",
-      "src/core/path.hk",
-      "src/core/router.hk",
-      "src/core/environment.hk"
-    ],
-    "http-contracts": [
-      "tests/web.hk",
-      "src/core/app.hk",
-      "src/core/content.hk",
-      "src/core/message.hk",
-      "src/core/middleware.hk",
-      "src/core/path.hk",
-      "src/core/router.hk",
-      "src/http/http.hk",
-      "src/http/logging.hk",
-      "src/core/environment.hk"
-    ]
+  "version": 2,
+  "defaultUnit": "web",
+  "units": {
+    "core": {
+      "kind": "library",
+      "sources": ["src/core"]
+    },
+    "http": {
+      "kind": "library",
+      "sources": ["src/http"],
+      "references": ["core"]
+    },
+    "example": {
+      "kind": "library",
+      "sources": ["examples"],
+      "exclude": ["examples/memory.hk", "examples/web"],
+      "references": ["core"]
+    },
+    "memory": {
+      "kind": "executable",
+      "sources": ["examples/memory.hk"],
+      "references": ["example"]
+    },
+    "web": {
+      "kind": "executable",
+      "sources": ["examples/web"],
+      "references": ["http"]
+    },
+    "contracts": {
+      "kind": "executable",
+      "sources": ["tests/contracts.hk"],
+      "references": ["example"]
+    },
+    "http-contracts": {
+      "kind": "executable",
+      "sources": ["tests/web.hk"],
+      "references": ["http"]
+    },
+    "logging": {
+      "kind": "executable",
+      "sources": ["tests/logging.hk"],
+      "references": ["http"]
+    },
+    "environment": {
+      "kind": "executable",
+      "sources": ["tests/environment.hk"],
+      "references": ["core"]
+    },
+    "cli": {
+      "kind": "executable",
+      "sources": ["cli"],
+      "references": ["core"]
+    }
   }
 }

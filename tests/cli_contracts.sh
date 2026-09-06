@@ -15,11 +15,17 @@ grep -qF SUMI_CLI_DESTINATION "$SUMI_TEST_WORK/error"
 [[ "$(cat "$project/keep.txt")" == 'user content' ]]
 "$cli" new --help > /dev/null
 [[ ! -e "$SUMI_TEST_WORK/--help" ]]
+: > "$project/sumi.conf"
+"$cli" test --project "$project"
+printf 'public=public\nserver=web\ntest=test\n' > "$project/sumi.conf"
 if timeout 5 "$cli" server --project "$project" --port '' > "$SUMI_TEST_WORK/error" 2>&1; then fail 'empty port accepted'; fi
 grep -qF 'SUMI_CLI_ARGUMENT: Missing port' "$SUMI_TEST_WORK/error"
 mv "$project/app" "$project/application"
 mv "$project/public" "$project/assets"
-sed -i 's@app/routes.hk@application/routes.hk@g' "$project/neri.json"
+sed -i 's@"app"@"application"@' "$project/neri.json"
+# New library files are visible through project references without manifest edits.
+printf 'namespace exampleweb\ndef discovered(): Int\n  return 42\nend\n' > "$project/application/additional.hk"
+sed -i '/def main(): Void/a\  test.assertEqual(exampleweb.discovered(), 42)' "$project/tests/application.hk"
 sed -i 's@public=public@public=assets@' "$project/sumi.conf"
 (cd "$project/application" && "$cli" t)
 "$cli" test --project "$project" --release

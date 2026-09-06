@@ -39,7 +39,7 @@ To build and run from the repository root:
 
 ```sh
 mkdir -p build
-neri build --project neri.json --source-set web --output build/sumi
+neri build --project neri.json --unit web --output build/sumi
 ./build/sumi
 ```
 
@@ -110,12 +110,18 @@ This repository separates library code from examples:
 ```text
 src/core/             Requests, responses, routing, middleware, static registration
 src/http/             HTTP adapter, response serialization, structured logging
+examples/application.hk Shared example application library
+examples/memory.hk    In-memory executable example
 examples/web/app/     Example route registration
 examples/web/public/  Example HTML, CSS, and JavaScript
 examples/web/main.hk  Example startup
 tests/                In-memory and real HTTP contracts
 scripts/              Run and verification commands
 ```
+
+The root `neri.json` declares named v2 units. Libraries use source directories,
+and executables use explicit entry files or directories; references express their
+dependencies without creating a manifest per folder.
 
 Application services do not need to know about sockets. Handlers receive services
 through captured values; Sumi does not define a persistence layer.
