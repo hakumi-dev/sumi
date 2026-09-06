@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SUMI_LAUNCHER="${BASH_SOURCE[0]}"
+while [[ -L "$SUMI_LAUNCHER" ]]; do
+  SUMI_LINK_DIR="$(cd -- "$(dirname -- "$SUMI_LAUNCHER")" && pwd -P)"
+  SUMI_LAUNCHER="$(readlink -- "$SUMI_LAUNCHER")"
+  [[ "$SUMI_LAUNCHER" = /* ]] || SUMI_LAUNCHER="$SUMI_LINK_DIR/$SUMI_LAUNCHER"
+done
+export SUMI_HOME="$(cd -- "$(dirname -- "$SUMI_LAUNCHER")/.." && pwd -P)"
+SUMI_COMPILER="${NERI:-neri}"
+if ! command -v "$SUMI_COMPILER" >/dev/null 2>&1; then
+  printf 'SUMI_CLI_COMPILER: Neri was not found. Install Neri or set NERI to its executable.\n' >&2
+  exit 127
+fi
+export NERI="$(command -v "$SUMI_COMPILER")"
+if [[ "$NERI" != /* ]]; then
+  export NERI="$(cd -- "$(dirname -- "$NERI")" && pwd -P)/$(basename -- "$NERI")"
+fi
+exec "$NERI" run "$SUMI_HOME/cli/main.hk" "$SUMI_HOME"/src/core/*.hk -- "$@"

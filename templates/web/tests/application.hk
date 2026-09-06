@@ -1,0 +1,20 @@
+use sumi
+use exampleweb
+use test
+use console
+use host
+
+def main(): Void
+  let publicDirectory = host.environment("SUMI_PUBLIC")
+  if publicDirectory == null
+    host.exit(1)
+    return
+  end
+  let app = exampleweb.application(publicDirectory)
+  test.assertTrue(app.prepare() == null)
+  let response = app.handle(new sumi.Request("GET", "/"))
+  test.assertEqual(response.status, 200)
+  test.assertEqual(response.contentType, "text/html; charset=utf-8")
+  test.assertEqual(app.handle(new sumi.Request("GET", "/missing")).status, 404)
+  console.println("Application contracts passed")
+end

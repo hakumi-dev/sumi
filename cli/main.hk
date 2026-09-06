@@ -1,0 +1,341 @@
+use host
+use sumi
+use console
+
+class Project
+  public root: String
+  public publicDirectory: String = "public"
+  public server: String = "web"
+  public tests: String = "test"
+
+  def init(root: String): Void
+    this.root = root
+  end
+end
+
+def fail(code: String, message: String): Void
+  console.println(code + ": " + message)
+  host.exit(1)
+end
+
+def required(value: String?, description: String): String
+  if value == null
+    fail("SUMI_CLI_ARGUMENT", "Missing " + description)
+    return ""
+  end
+  return value
+end
+
+def envOr(name: String, fallback: String): String
+  let value = host.environment(name)
+  return value if value != null
+  return fallback
+end
+
+def absolute(path: String): String
+  let result = host.pathAbsolute(path)
+  if result == null
+    fail("SUMI_CLI_PATH", "Cannot resolve " + path + ": " + host.errorMessage())
+    return ""
+  end
+  return result
+end
+
+def parent(path: String): String
+  var index = host.stringByteLength(path) - 1
+  while index > 0
+    if host.stringByteAt(path, index) == (47 as Byte)
+      return host.stringSlice(path, 0, index)
+    end
+    index = index - 1
+  end
+  return "/"
+end
+
+def execute(command: String, arguments: String[]): Int
+  let result = host.run(command, arguments)
+  if result == null
+    fail("SUMI_CLI_EXEC", "Cannot start " + command + ": " + host.errorMessage())
+    return 1
+  end
+  return result
+end
+
+def checked(command: String, arguments: String[]): Void
+  let status = execute(command, arguments)
+  if status != 0
+    fail("SUMI_CLI_OPERATION", command + " exited " + (status as String))
+  end
+end
+
+def parseSetting(project: Project, line: String, lineNumber: Int): Void
+  if line == "" || host.stringByteAt(line, 0) == (35 as Byte)
+    return
+  end
+
+  var index = 0
+  while index < host.stringByteLength(line) && host.stringByteAt(line, index) != (61 as Byte)
+    index = index + 1
+  end
+
+  if index == 0 || index == host.stringByteLength(line) - 1 || index == host.stringByteLength(line)
+    fail("SUMI_CLI_CONFIG", project.root + "/sumi.conf:" + (lineNumber as String) + ": Expected key=value")
+    return
+  end
+
+  let key = host.stringSlice(line, 0, index)
+  let value = host.stringSlice(line, index + 1, host.stringByteLength(line) - index - 1)
+  if key == "public"
+    project.publicDirectory = value
+  else if key == "server"
+    project.server = value
+  else if key == "test"
+    project.tests = value
+  else
+    fail("SUMI_CLI_CONFIG", project.root + "/sumi.conf:" + (lineNumber as String) + ": Unknown setting " + key)
+  end
+end
+
+def projectAt(directory: String): Project
+  let root = absolute(directory)
+  let manifest = host.readText(root + "/neri.json")
+  if manifest == null
+    fail("SUMI_CLI_PROJECT", "Cannot read " + root + "/neri.json: " + host.errorMessage())
+  end
+
+  let project = new Project(root)
+  let config = host.readText(root + "/sumi.conf")
+  if config == null
+    fail("SUMI_CLI_CONFIG", "Cannot read " + root + "/sumi.conf: " + host.errorMessage())
+  else
+    var start = 0
+    var index = 0
+    var lineNumber = 1
+    let length = host.stringByteLength(config)
+    while index <= length
+      var separator = index == length
+      if index < length
+        separator = host.stringByteAt(config, index) == (10 as Byte)
+      end
+      if separator
+        var size = index - start
+        if size > 0 && host.stringByteAt(config, index - 1) == (13 as Byte)
+          size = size - 1
+        end
+        parseSetting(project, host.stringSlice(config, start, size), lineNumber)
+        lineNumber = lineNumber + 1
+        start = index + 1
+      end
+      index = index + 1
+    end
+  end
+  return project
+end
+
+def discover(): String
+  var directory = absolute(".")
+  while true
+    if host.readText(directory + "/neri.json") != null
+      return directory
+    end
+    if directory == "/"
+      fail("SUMI_CLI_PROJECT", "No neri.json found. Run inside a project or use --project <directory>.")
+      return ""
+    end
+    directory = parent(directory)
+  end
+  return ""
+end
+
+def createProject(destination: String): Void
+  let root = absolute(destination)
+  let installation = envOr("SUMI_HOME", "")
+  if installation == ""
+    fail("SUMI_CLI_INSTALL", "SUMI_HOME is missing. Use the bin/sumi launcher.")
+    return
+  end
+  # mkdir without -p atomically refuses an existing destination.
+  if execute("mkdir", ["--", root]) != 0
+    fail("SUMI_CLI_DESTINATION", "Cannot create " + root + "; use a new directory under an existing parent. Existing files were not overwritten.")
+    return
+  end
+  checked("cp", ["-R", "--", installation + "/templates/web/.", root])
+  checked("mkdir", ["--", root + "/vendor"])
+  checked("cp", ["-R", "--", installation + "/src", root + "/vendor/sumi"])
+  console.println("Created " + root)
+  console.println("Next: cd into the project, then run sumi server or sumi test.")
+end
+
+def help(): Void
+  console.println("Sumi development CLI")
+  console.println("  sumi new | n <directory>       Create an application")
+  console.println("  sumi server | s                Run the application server")
+  console.println("  sumi test | t                  Run application contracts")
+  console.println("  sumi build | b                 Build the application executable")
+  console.println("  sumi console | c               Reserved for a typed application session (requires Neri interactive evaluation)")
+  console.println("Options: --project <directory>, --environment/-e <development|test|production>, --port <1..65535> (server), --release (build/test), --output <file> (build)")
+  console.println("Source sets are declared in neri.json; sumi.conf selects server/test sets and the public directory.")
+end
+
+def main(): Void
+  let count = host.argumentCount()
+  if count == 0
+    help()
+    return
+  end
+
+  var command = required(host.argumentAt(0), "command")
+  if command == "--help" || command == "help" || command == "-h"
+    help()
+    return
+  end
+
+  if command == "n"
+    command = "new"
+  else if command == "s"
+    command = "server"
+  else if command == "t"
+    command = "test"
+  else if command == "b"
+    command = "build"
+  else if command == "c"
+    command = "console"
+  end
+
+  let second = host.argumentAt(1)
+  if count == 2 && second != null && (second == "--help" || second == "-h")
+    help()
+    return
+  end
+
+  if command == "new"
+    if count != 2
+      fail("SUMI_CLI_ARGUMENT", "Usage: sumi new <directory>")
+      return
+    end
+    createProject(required(host.argumentAt(1), "destination"))
+    return
+  end
+
+  if command != "server" && command != "test" && command != "build" && command != "console"
+    fail("SUMI_CLI_COMMAND", "Unknown command " + command + ". Run sumi --help.")
+    return
+  end
+
+  var environment = envOr("SUMI_ENV", command == "test" ? "test" : "development")
+  var directory = ""
+  var port = ""
+  var release = false
+  var output = ""
+  var index = 1
+  while index < count
+    let option = required(host.argumentAt(index), "option")
+    if option == "--help" || option == "-h"
+      help()
+      return
+    else if option == "--environment" || option == "-e"
+      index = index + 1
+      environment = required(host.argumentAt(index), "environment")
+    else if option == "--project"
+      index = index + 1
+      directory = required(host.argumentAt(index), "project directory")
+    else if option == "--port" && command == "server"
+      index = index + 1
+      port = required(host.argumentAt(index), "port")
+    else if option == "--release" && (command == "test" || command == "build")
+      release = true
+    else if option == "--output" && command == "build"
+      index = index + 1
+      output = required(host.argumentAt(index), "output path")
+    else
+      fail("SUMI_CLI_ARGUMENT", "Unsupported option " + option + " for " + command)
+      return
+    end
+    index = index + 1
+  end
+
+  if command == "console"
+    fail("SUMI_CONSOLE_UNAVAILABLE", "Typed persistent evaluation is not available in Neri yet (neri#36). No application session was started.")
+    return
+  end
+
+  if directory == ""
+    directory = discover()
+  end
+
+  let project = projectAt(directory)
+  let settings = new sumi.Environment(environment)
+  let configurationError = settings.load(project.root)
+  if configurationError != null
+    fail(configurationError.code, configurationError.message)
+    return
+  end
+
+  let compiler = envOr("NERI", "neri")
+  var args: String[] = ["-C", project.root]
+  var entry = settings.values
+  # Only the effective value is exported; existing process variables win.
+  while entry != null
+    let effective = settings.get(entry.key)
+    if effective != null
+      args = host.appendString(args, entry.key + "=" + effective)
+    end
+    entry = entry.next
+  end
+
+  args = host.appendString(args, "SUMI_ENV=" + environment)
+  var publicDirectory = project.publicDirectory
+  let configuredPublic = settings.get("SUMI_PUBLIC")
+  if configuredPublic != null
+    publicDirectory = configuredPublic
+  end
+
+  if publicDirectory == ""
+    fail("SUMI_CLI_CONFIG", "SUMI_PUBLIC must not be empty")
+    return
+  end
+
+  if host.stringByteAt(publicDirectory, 0) != (47 as Byte)
+    publicDirectory = project.root + "/" + publicDirectory
+  end
+
+  args = host.appendString(args, "SUMI_PUBLIC=" + publicDirectory)
+  if command == "server"
+    if port == ""
+      let configuredPort = settings.get("PORT")
+      port = "8080"
+      if configuredPort != null
+        port = configuredPort
+      end
+    end
+    let parsedPort = host.parseInt(port)
+    if parsedPort == null || parsedPort < 1 || parsedPort > 65535
+      fail("SUMI_CLI_PORT", "Port must be an integer from 1 to 65535")
+      return
+    end
+    args = host.appendString(args, "PORT=" + port)
+  end
+
+  args = host.appendString(args, compiler)
+  args = host.appendString(args, command == "build" ? "build" : "run")
+  args = host.appendString(args, "--project")
+  args = host.appendString(args, project.root + "/neri.json")
+  args = host.appendString(args, "--source-set")
+  args = host.appendString(args, command == "test" ? project.tests : project.server)
+  if release
+    args = host.appendString(args, "--release")
+  end
+
+  if command == "build"
+    if output == ""
+      checked("mkdir", ["-p", "--", project.root + "/build"])
+      output = project.root + "/build/application"
+    else
+      output = absolute(output)
+    end
+    args = host.appendString(args, "--output")
+    args = host.appendString(args, output)
+  end
+
+  host.exit(execute("/usr/bin/env", args))
+end

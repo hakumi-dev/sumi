@@ -7,6 +7,12 @@ are ordinary constructor arguments and captured values.
 The routing core works in memory. The HTTP adapter connects it to a loopback
 server and records structured request diagnostics.
 
+## Development CLI
+
+The native CLI creates applications and provides `sumi server` / `s`,
+`sumi test` / `t`, and `sumi build` / `b`, with explicit environment configuration.
+See [CLI and environments](docs/CLI.md) for installation, project layout, and `.env`.
+
 ## Run the website
 
 Install Neri with trailing `do` blocks and the HTTP and clock standard libraries.

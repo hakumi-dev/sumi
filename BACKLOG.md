@@ -13,6 +13,16 @@ The product reference is in `docs/`; this file tracks pending work.
   and diagnostic code. Startup errors have separate code and message fields.
 - The example has separate application, public assets, and startup files.
 - Core and real HTTP contracts pass in Debug and Release through `scripts/test.sh`.
+- The native CLI provides `new/n`, `server/s`, `test/t`, and `build/b`.
+  Generated projects support renamed application and public directories and
+  execution from nested or external working directories.
+- Environment loading supports development, test, and production, optional
+  dotenv files, process overrides, and file/line diagnostics without values.
+- `console/c` reports unavailable. Persistent application evaluation depends on
+  [Neri #36](https://github.com/hakumi-dev/neri/issues/36).
+- Multi-source Unicode project paths are tracked in
+  [Neri #37](https://github.com/hakumi-dev/neri/issues/37); ASCII paths with spaces
+  are covered by CLI contracts.
 - Existing issue #1 remains open and describes the former `main.hk` sketch.
   Its implementation is now represented by the core and in-memory example;
   reconcile its acceptance and links before closing it on the board.

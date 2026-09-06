@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "defaultSourceSet": "web",
+  "sourceSets": {
+    "web": [
+      "main.hk",
+      "app/routes.hk",
+      "vendor/sumi/core/app.hk",
+      "vendor/sumi/core/content.hk",
+      "vendor/sumi/core/message.hk",
+      "vendor/sumi/core/middleware.hk",
+      "vendor/sumi/core/path.hk",
+      "vendor/sumi/core/router.hk",
+      "vendor/sumi/http/http.hk",
+      "vendor/sumi/http/logging.hk",
+      "vendor/sumi/core/environment.hk"
+    ],
+    "test": [
+      "tests/application.hk",
+      "app/routes.hk",
+      "vendor/sumi/core/app.hk",
+      "vendor/sumi/core/content.hk",
+      "vendor/sumi/core/message.hk",
+      "vendor/sumi/core/middleware.hk",
+      "vendor/sumi/core/path.hk",
+      "vendor/sumi/core/router.hk",
+      "vendor/sumi/core/environment.hk"
+    ]
+  }
+}

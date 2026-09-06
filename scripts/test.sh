@@ -22,5 +22,10 @@ for mode in debug release; do
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set web "${flags[@]}" --output "$SUMI_WORK/site-$mode"
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set http-contracts "${flags[@]}" --output "$SUMI_WORK/web-$mode"
   bash "$SUMI_ROOT/tests/http_contracts.sh" "$SUMI_WORK/site-$mode" "$SUMI_WORK/web-$mode"
+  "$SUMI_COMPILER" build "$SUMI_ROOT/tests/environment.hk" "$SUMI_ROOT"/src/core/*.hk "${flags[@]}" --output "$SUMI_WORK/environment-$mode"
+  mkdir "$SUMI_WORK/env-$mode"
+  SUMI_FIXTURE_EXTERNAL=process "$SUMI_WORK/environment-$mode" "$SUMI_WORK/env-$mode"
+  "$SUMI_COMPILER" build "$SUMI_ROOT/cli/main.hk" "$SUMI_ROOT"/src/core/*.hk "${flags[@]}" --output "$SUMI_WORK/cli-$mode"
+  NERI="$SUMI_COMPILER" bash "$SUMI_ROOT/tests/cli_contracts.sh" "$SUMI_WORK/cli-$mode"
   printf 'Sumi %s passed\n' "$mode"
 done
