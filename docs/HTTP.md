@@ -73,6 +73,14 @@ that the client consumed them.
 backslashes, and controls are escaped or replaced; Unicode text is preserved.
 Applications can supply another formatter or destination through `Options.log`.
 
+`Options.minimumLevel` defaults to `info`. Select `debug`, `info`, `warning`,
+`error`, or `off`; only events at or above the selected level reach the sink.
+`off` disables event delivery. An invalid level returns `SUMI_LOG_LEVEL` before
+opening a listener. Filtering does not alter HTTP responses. It can omit start
+events while retaining failure events, so a filtered sink may see incomplete
+event pairs. The generated server and web example read this option from
+`LOG_LEVEL`. Startup failures are always reported by their entry points.
+
 ```text
 level="error" event="http.request.completed" request_id="4" status=500 duration_ms=1 method="GET" route="/hello/:name" code="APP_GREETING_UNAVAILABLE" message="Greeting service unavailable"
 ```
@@ -89,6 +97,7 @@ diagnostic messages remain the application's responsibility.
 
 | Code | Meaning and corrective action |
 | --- | --- |
+| `SUMI_LOG_LEVEL` | Invalid minimum log level. Use `debug`, `info`, `warning`, `error`, or `off`. |
 | `SUMI_STATIC_READ` | A registered file could not be read as UTF-8. The message names its source and route and includes the host error. Check the path, permissions, and encoding. |
 | `SUMI_STATIC_SIZE` | A file exceeds 1 MiB. Reduce the asset size. |
 | `SUMI_CONTENT_TYPE` | A static registration has an invalid content type. Supply a media type, optionally followed by `; charset=utf-8`. |

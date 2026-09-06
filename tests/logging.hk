@@ -1,0 +1,37 @@
+use sumi
+use sumiweb
+use test
+use console
+
+class RecordedLog
+  public levels: String = ""
+end
+
+def main(): Void
+  let recorded = new RecordedLog()
+  let options = new sumiweb.Options()
+  options.minimumLevel = "warning"
+  options.log = fn(event)
+    recorded.levels = recorded.levels + event.level + ";"
+  end
+
+  for level in ["debug", "info", "warning", "error"]
+    let event = new sumiweb.LogEvent("application.event")
+    event.level = level
+    sumiweb.emit(options, event)
+  end
+
+  test.assertEqual(recorded.levels, "warning;error;")
+
+  options.minimumLevel = "off"
+  let error = new sumiweb.LogEvent("application.failure")
+  error.level = "error"
+  sumiweb.emit(options, error)
+  test.assertEqual(recorded.levels, "warning;error;")
+
+  options.minimumLevel = "invalid"
+  let rejected = sumiweb.serve(new sumi.App(), "127.0.0.1:0", options)
+  test.assertEqual(rejected.code, "SUMI_LOG_LEVEL")
+
+  console.println("Sumi logging contracts passed")
+end

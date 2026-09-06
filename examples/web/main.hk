@@ -30,6 +30,8 @@ def main(): Void
   port = configuredPort if configuredPort != null
 
   let options = new sumiweb.Options()
+  let logLevel = settings.get("LOG_LEVEL")
+  options.minimumLevel = logLevel if logLevel != null
 
   options.onListening = fn(address)
     console.println("Sumi listening on http://" + address)

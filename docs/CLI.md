@@ -141,6 +141,7 @@ is versioned and should contain examples, never real credentials.
 
 ```text
 PORT=8080
+LOG_LEVEL=info
 TITLE="A place for ideas"
 EMPTY=
 # A full-line comment

@@ -133,6 +133,10 @@ def elapsed(startedAt: Int?): Int
 end
 
 def serve(app: sumi.App, address: String, options: Options? = null): ServerError
+  if options != null && levelRank(options.minimumLevel) < 0
+    return new ServerError("SUMI_LOG_LEVEL", "Log level must be debug, info, warning, error, or off")
+  end
+
   let configurationError = app.prepare()
   if configurationError != null
     return new ServerError(configurationError.code, configurationError.message)

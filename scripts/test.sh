@@ -24,6 +24,8 @@ for mode in debug release; do
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set web "${flags[@]}" --output "$SUMI_WORK/site-$mode"
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set http-contracts "${flags[@]}" --output "$SUMI_WORK/web-$mode"
   bash "$SUMI_ROOT/tests/http_contracts.sh" "$SUMI_WORK/site-$mode" "$SUMI_WORK/web-$mode"
+  "$SUMI_COMPILER" build "$SUMI_ROOT/tests/logging.hk" "$SUMI_ROOT"/src/core/*.hk "$SUMI_ROOT"/src/http/*.hk "${flags[@]}" --output "$SUMI_WORK/logging-$mode"
+  "$SUMI_WORK/logging-$mode"
   "$SUMI_COMPILER" build "$SUMI_ROOT/tests/environment.hk" "$SUMI_ROOT"/src/core/*.hk "${flags[@]}" --output "$SUMI_WORK/environment-$mode"
   mkdir "$SUMI_WORK/env-$mode"
   SUMI_FIXTURE_EXTERNAL=process "$SUMI_WORK/environment-$mode" "$SUMI_WORK/env-$mode"
