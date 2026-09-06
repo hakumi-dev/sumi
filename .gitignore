@@ -12,3 +12,7 @@ GEMINI.md
 .codex/
 .cursor/
 .cursorrules
+
+.env
+.env.*
+!.env.example

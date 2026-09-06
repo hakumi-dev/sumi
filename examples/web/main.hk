@@ -6,25 +6,46 @@ use host
 use console
 
 def main(): Void
+  var environmentName = "production"
+  let selectedEnvironment = host.environment("SUMI_ENV")
+  environmentName = selectedEnvironment if selectedEnvironment != null
+
+  let settings = new sumi.Environment(environmentName)
+  let settingsError = settings.load(".")
+
+  if settingsError != null
+    console.println(settingsError.code + ": " + settingsError.message)
+    host.exit(1)
+    return
+  end
+
   var root = "examples/web/public"
-  let configuredRoot = host.environment("SUMI_PUBLIC")
+  let configuredRoot = settings.get("SUMI_PUBLIC")
   root = configuredRoot if configuredRoot != null
+
   let app = exampleweb.application(root)
+
   var port = "8080"
-  let configuredPort = host.environment("PORT")
+  let configuredPort = settings.get("PORT")
   port = configuredPort if configuredPort != null
+
   let options = new sumiweb.Options()
+
   options.onListening = fn(address)
     console.println("Sumi listening on http://" + address)
   end
+
   options.log = fn(event)
     console.println(sumiweb.format(event))
   end
+
   let error = sumiweb.serve(app, "127.0.0.1:" + port, options)
+
   let event = new sumiweb.LogEvent("server.failed")
   event.level = "error"
   event.code = error.code
   event.message = error.message
+
   console.println(sumiweb.format(event))
   host.exit(1)
 end

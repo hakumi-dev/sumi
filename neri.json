@@ -12,7 +12,8 @@
       "src/core/path.hk",
       "src/core/router.hk",
       "src/http/http.hk",
-      "src/http/logging.hk"
+      "src/http/logging.hk",
+      "src/core/environment.hk"
     ],
     "memory": [
       "examples/memory.hk",
@@ -22,7 +23,8 @@
       "src/core/message.hk",
       "src/core/middleware.hk",
       "src/core/path.hk",
-      "src/core/router.hk"
+      "src/core/router.hk",
+      "src/core/environment.hk"
     ],
     "contracts": [
       "tests/contracts.hk",
@@ -32,7 +34,8 @@
       "src/core/message.hk",
       "src/core/middleware.hk",
       "src/core/path.hk",
-      "src/core/router.hk"
+      "src/core/router.hk",
+      "src/core/environment.hk"
     ],
     "http-contracts": [
       "tests/web.hk",
@@ -43,7 +46,8 @@
       "src/core/path.hk",
       "src/core/router.hk",
       "src/http/http.hk",
-      "src/http/logging.hk"
+      "src/http/logging.hk",
+      "src/core/environment.hk"
     ]
   }
 }

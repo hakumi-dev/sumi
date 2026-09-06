@@ -1,0 +1,45 @@
+use sumi
+use host
+use test
+use console
+
+def expectSetting(environment: sumi.Environment, key: String, expected: String): Void
+  let value = environment.get(key)
+  test.assertTrue(value != null)
+  if value != null
+    test.assertEqual(value, expected)
+  end
+end
+
+def main(): Void
+  let directory = host.argumentAt(0)
+  test.assertTrue(directory != null)
+  if directory == null
+    return
+  end
+  test.assertTrue(host.writeText(directory + "/.env", "SUMI_FIXTURE_SHARED=common\nEMPTY=\nQUOTED=\"literal # value\"\nSUMI_FIXTURE_EXTERNAL=file\n"))
+  test.assertTrue(host.writeText(directory + "/.env.development", "SUMI_FIXTURE_SHARED=development\n"))
+  test.assertTrue(host.writeText(directory + "/.env.test", "SUMI_FIXTURE_SHARED=test\n"))
+  for name in ["development", "test", "production"]
+    let environment = new sumi.Environment(name)
+    test.assertTrue(environment.load(directory) == null)
+    expectSetting(environment, "SUMI_FIXTURE_SHARED", name == "production" ? "common" : name)
+    expectSetting(environment, "SUMI_FIXTURE_EXTERNAL", "process")
+    expectSetting(environment, "EMPTY", "")
+    expectSetting(environment, "QUOTED", "literal # value")
+  end
+  let environment = new sumi.Environment("test")
+  test.assertTrue(host.writeText(directory + "/.env.test", "SAFE=value\nBROKEN=\"SECRET\n"))
+  let error = environment.load(directory)
+  test.assertTrue(error != null)
+  if error != null
+    test.assertEqual(error.code, "SUMI_ENV_SYNTAX")
+    test.assertEqual(error.message, directory + "/.env.test:2: Unclosed quoted value for BROKEN")
+  end
+  test.assertTrue(host.writeText(directory + "/.env.test", "SUMI_FIXTURE_SHARED=reloaded\n"))
+  test.assertTrue(environment.load(directory) == null)
+  expectSetting(environment, "SUMI_FIXTURE_SHARED", "reloaded")
+  let invalid = new sumi.Environment("../unexpected")
+  test.assertTrue(invalid.load(directory) != null)
+  console.println("Sumi environment contracts passed")
+end

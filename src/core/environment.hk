@@ -1,0 +1,169 @@
+use host
+
+namespace sumi
+
+internal class EnvironmentValue
+  public key: String
+  public value: String
+  public next: EnvironmentValue?
+
+  def init(key: String, value: String, next: EnvironmentValue?): Void
+    this.key = key
+    this.value = value
+    this.next = next
+  end
+end
+
+public class Environment
+  public name: String
+  public error: ConfigurationError?
+  internal values: EnvironmentValue?
+
+  def init(name: String): Void
+    this.name = name
+  end
+
+  def get(key: String): String?
+    let external = host.environment(key)
+    if external != null
+      return external
+    end
+
+    var entry = this.values
+    while entry != null
+      if entry.key == key
+        return entry.value
+      end
+      entry = entry.next
+    end
+
+    return null
+  end
+
+  def load(root: String): ConfigurationError?
+    this.error = null
+    this.values = null
+    if this.name != "development" && this.name != "test" && this.name != "production"
+      this.error = new ConfigurationError("Environment must be development, test, or production", "SUMI_ENV_NAME")
+      return this.error
+    end
+
+    this.read(root + "/.env")
+    if this.error == null
+      this.read(root + "/.env." + this.name)
+    end
+
+    return this.error
+  end
+
+  private def read(path: String): Void
+    # Optional files; distinguish absence from an existing unreadable file.
+    let exists = host.run("test", ["-e", path])
+    if exists == null || (exists != 0 && exists != 1)
+      this.error = new ConfigurationError("Cannot inspect environment file " + path, "SUMI_ENV_READ")
+      return
+    end
+
+    if exists == 1
+      return
+    end
+
+    let source = host.readText(path)
+    if source == null
+      this.error = new ConfigurationError("Cannot read environment file " + path, "SUMI_ENV_READ")
+      return
+    end
+
+    var lineNumber = 1
+    var start = 0
+    var index = 0
+    let length = host.stringByteLength(source)
+    while index <= length
+      var separator = index == length
+      if index < length
+        separator = host.stringByteAt(source, index) == (10 as Byte)
+      end
+      if separator
+        let line = envTrim(host.stringSlice(source, start, index - start))
+        this.parseLine(line, path, lineNumber)
+        if this.error != null
+          return
+        end
+        start = index + 1
+        lineNumber = lineNumber + 1
+      end
+      index = index + 1
+    end
+  end
+
+  private def parseLine(line: String, path: String, number: Int): Void
+    let length = host.stringByteLength(line)
+    if length == 0 || host.stringByteAt(line, 0) == (35 as Byte)
+      return
+    end
+
+    var separator = 0
+    while separator < length && host.stringByteAt(line, separator) != (61 as Byte)
+      separator = separator + 1
+    end
+
+    if separator == length
+      this.invalid(path, number, "Expected NAME=value")
+      return
+    end
+
+    let key = envTrim(host.stringSlice(line, 0, separator))
+    if !validParameterName(key)
+      this.invalid(path, number, "Invalid variable name")
+      return
+    end
+
+    var value = envTrim(host.stringSlice(line, separator + 1, length - separator - 1))
+    let size = host.stringByteLength(value)
+    var index = 0
+    while index < size
+      if host.stringByteAt(value, index) == (0 as Byte)
+        this.invalid(path, number, "NUL is not allowed in variable " + key)
+        return
+      end
+      index = index + 1
+    end
+
+    if size > 0
+      let first = host.stringByteAt(value, 0) as Int
+      if first == 34 || first == 39
+        if size < 2 || (host.stringByteAt(value, size - 1) as Int) != first
+          this.invalid(path, number, "Unclosed quoted value for " + key)
+          return
+        end
+        value = host.stringSlice(value, 1, size - 2)
+      end
+    end
+
+    this.values = new EnvironmentValue(key, value, this.values)
+  end
+
+  private def invalid(path: String, number: Int, message: String): Void
+    this.error = new ConfigurationError(path + ":" + (number as String) + ": " + message, "SUMI_ENV_SYNTAX")
+  end
+end
+
+def envTrim(value: String): String
+  var start = 0
+  var endAt = host.stringByteLength(value)
+  while start < endAt
+    let byte = host.stringByteAt(value, start) as Int
+    if byte != 32 && byte != 9 && byte != 13
+      break
+    end
+    start = start + 1
+  end
+  while endAt > start
+    let byte = host.stringByteAt(value, endAt - 1) as Int
+    if byte != 32 && byte != 9 && byte != 13
+      break
+    end
+    endAt = endAt - 1
+  end
+  return host.stringSlice(value, start, endAt - start)
+end
