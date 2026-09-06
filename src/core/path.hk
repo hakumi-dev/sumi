@@ -1,0 +1,146 @@
+use host
+namespace sumi
+
+internal class PathSegment
+  public value: String
+  public next: PathSegment?
+
+  def init(value: String): Void
+    this.value = value
+  end
+end
+
+internal class ParsedPath
+  public first: PathSegment?
+  public valid: Bool = false
+end
+
+# Split on ASCII separators; slices preserve complete UTF-8 segments.
+def parsePath(path: String): ParsedPath
+  let result = new ParsedPath()
+  let length = host.stringByteLength(path)
+  if length == 0 || host.stringByteAt(path, 0) != (47 as Byte)
+    return result
+  end
+  if length == 1
+    result.valid = true
+    return result
+  end
+  var last: PathSegment? = null
+  var start = 1
+  var index = 1
+  while index <= length
+    var separator = index == length
+    if index < length
+      let byte = host.stringByteAt(path, index) as Int
+      if byte == 63 || byte == 35
+        return result
+      end
+      separator = byte == 47
+    end
+    if separator
+      if start == index
+        return result
+      end
+      let segment = new PathSegment(host.stringSlice(path, start, index - start))
+      if last != null
+        last.next = segment
+      else
+        result.first = segment
+      end
+      last = segment
+      start = index + 1
+    end
+    index = index + 1
+  end
+  result.valid = true
+  return result
+end
+
+def isParameter(segment: String): Bool
+  return host.stringByteLength(segment) > 0 && host.stringByteAt(segment, 0) == (58 as Byte)
+end
+
+def parameterName(segment: String): String
+  return host.stringSlice(segment, 1, host.stringByteLength(segment) - 1)
+end
+
+def validParameterName(name: String): Bool
+  let length = host.stringByteLength(name)
+  if length == 0
+    return false
+  end
+  var index = 0
+  while index < length
+    let byte = host.stringByteAt(name, index) as Int
+    let letter = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95
+    let digit = byte >= 48 && byte <= 57
+    if !letter && !(index > 0 && digit)
+      return false
+    end
+    index = index + 1
+  end
+  return true
+end
+
+def validParameters(first: PathSegment?): Bool
+  var segment = first
+  while segment != null
+    if isParameter(segment.value)
+      if !validParameterName(parameterName(segment.value))
+        return false
+      end
+      var other = segment.next
+      while other != null
+        if other.value == segment.value
+          return false
+        end
+        other = other.next
+      end
+    end
+    segment = segment.next
+  end
+  return true
+end
+
+def equivalentPatterns(left: PathSegment?, right: PathSegment?): Bool
+  var a = left
+  var b = right
+  while a != null && b != null
+    if a.value != b.value && !(isParameter(a.value) && isParameter(b.value))
+      return false
+    end
+    a = a.next
+    b = b.next
+  end
+  return a == null && b == null
+end
+
+def matchesPath(pattern: PathSegment?, path: PathSegment?): Bool
+  var expected = pattern
+  var actual = path
+  while expected != null && actual != null
+    if !isParameter(expected.value) && expected.value != actual.value
+      return false
+    end
+    expected = expected.next
+    actual = actual.next
+  end
+  return expected == null && actual == null
+end
+
+# Called only for two patterns that match the same path.
+def moreSpecific(left: PathSegment?, right: PathSegment?): Bool
+  var a = left
+  var b = right
+  while a != null && b != null
+    let aParameter = isParameter(a.value)
+    let bParameter = isParameter(b.value)
+    if aParameter != bParameter
+      return !aParameter
+    end
+    a = a.next
+    b = b.next
+  end
+  return false
+end

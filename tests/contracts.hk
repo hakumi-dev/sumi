@@ -1,0 +1,261 @@
+use sumi
+use example
+use test
+use console
+
+class Observation
+  public calls: Int = 0
+  public log: String = ""
+  public saved: (fn(Request): Response)?
+end
+
+class ExpectedResponse
+  public path: String
+  public status: Int
+  public body: String
+
+  def init(path: String, status: Int, body: String): Void
+    this.path = path
+    this.status = status
+    this.body = body
+  end
+end
+
+def expectResponse(response: Response, status: Int, body: String): Void
+  if response.status != status || response.body != body
+    console.println("Expected " + (status as String) + ": " + body)
+    console.println("Received " + (response.status as String) + ": " + response.body)
+  end
+  test.assertEqual(response.status, status)
+  test.assertEqual(response.body, body)
+end
+
+def ready(app: App): Void
+  test.assertTrue(app.prepare() == null)
+end
+
+def exampleContract(): Void
+  let observation = new Observation()
+  let app = application(new GreetingService("Hello, ")) do |message|
+    observation.calls = observation.calls + 1
+    observation.log = message
+  end
+  ready(app)
+  let cases = [
+    new ExpectedResponse("/", 200, "Hello, Sumi!"),
+    new ExpectedResponse("/hello/Ada", 200, "Hello, Ada!"),
+    new ExpectedResponse("/hello/水", 200, "Hello, 水!"),
+    new ExpectedResponse("/square/12", 200, "144"),
+    new ExpectedResponse("/square/-1000", 200, "1000000"),
+    new ExpectedResponse("/square/1000", 200, "1000000"),
+    new ExpectedResponse("/square/nope", 400, "Expected an integer"),
+    new ExpectedResponse("/square/9223372036854775808", 400, "Expected an integer"),
+    new ExpectedResponse("/square/1001", 400, "Expected an integer between -1000 and 1000"),
+    new ExpectedResponse("/square/-1001", 400, "Expected an integer between -1000 and 1000"),
+    new ExpectedResponse("/missing", 404, "Not Found")
+  ]
+  for expected in cases
+    expectResponse(app.handle(new Request("GET", expected.path)), expected.status, expected.body)
+    test.assertEqual(observation.log, expected.path + " -> " + (expected.status as String))
+  end
+  test.assertEqual(observation.calls, cases.Length)
+end
+
+def routingContract(): Void
+  # Check precedence in both registration orders.
+  for reverse in [false, true]
+    let app = new App()
+    if reverse
+      app.get("/users/new") do |request|
+        return text("literal")
+      end
+      app.get("/:section/new") do |request|
+        return text("section")
+      end
+    end
+    app.get("/users/:id") do |request|
+      let id = request.param("id")
+      if id == null
+        return text("missing", 500)
+      end
+      return text(id)
+    end
+    if !reverse
+      app.get("/:section/new") do |request|
+        return text("section")
+      end
+      app.get("/users/new") do |request|
+        return text("literal")
+      end
+    end
+    ready(app)
+    expectResponse(app.handle(new Request("GET", "/users/new")), 200, "literal")
+    expectResponse(app.handle(new Request("GET", "/users/42")), 200, "42")
+    expectResponse(app.handle(new Request("GET", "/posts/new")), 200, "section")
+  end
+
+  let app = new App()
+  app.get("/:section/new") do |request|
+    return text("section")
+  end
+  app.get("/users/:id") do |request|
+    return text("user")
+  end
+  app.get("/teams/:team_id/users/:user") do |request|
+    let team = request.param("team_id")
+    let user = request.param("user")
+    if team == null || user == null
+      return text("missing", 500)
+    end
+    return text(team + ":" + user)
+  end
+  ready(app)
+  expectResponse(app.handle(new Request("GET", "/users/new")), 200, "user")
+  expectResponse(app.handle(new Request("GET", "/teams/core/users/Ada%2FLovelace")), 200, "core:Ada%2FLovelace")
+  for path in ["", "users/42", "/users/", "/users//42", "/users/42/", "/users/42/extra", "/users/42?q=1", "/users/42#part"]
+    expectResponse(app.handle(new Request("GET", path)), 404, "Not Found")
+  end
+  expectResponse(app.handle(new Request("POST", "/users/42")), 404, "Not Found")
+end
+
+def configurationContract(): Void
+  for pattern in ["relative", "/bad/", "/bad//path", "/:name/:name", "/:", "/:1name", "/:bad-name", "/path?query", "/path#fragment"]
+    let app = new App()
+    app.get(pattern) do |request|
+      return text("unreachable")
+    end
+    let error = app.prepare()
+    test.assertTrue(error != null)
+    if error != null
+      test.assertEqual(error.message, "Invalid GET pattern: " + pattern)
+    end
+    expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+  end
+  for pattern in ["/same", "/:name"]
+    let app = new App()
+    app.get(pattern) do |request|
+      return text("first")
+    end
+    let duplicate = pattern == "/same" ? "/same" : "/:other"
+    app.get(duplicate) do |request|
+      return text("second")
+    end
+    # A later valid registration must not clear the configuration error.
+    app.get("/valid") do |request|
+      return text("valid")
+    end
+    let error = app.prepare()
+    test.assertTrue(error != null)
+    if error != null
+      test.assertEqual(error.message, "Duplicate GET pattern: " + duplicate)
+    end
+  end
+  let app = new App()
+  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+  ready(app)
+  ready(app)
+  expectResponse(app.handle(new Request("GET", "/")), 404, "Not Found")
+  app.around() do |request, next|
+    return next(request)
+  end
+  test.assertTrue(app.prepare() != null)
+  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+end
+
+def middlewareContract(): Void
+  let observation = new Observation()
+  let app = new App()
+  app.around() do |request, next|
+    observation.log = observation.log + "outer>"
+    let response = next(request)
+    observation.log = observation.log + "<outer"
+    test.assertTrue(request.param("name") == null)
+    test.assertEqual(request.path, "/hello/Ada")
+    return response
+  end
+  app.around() do |request, next|
+    observation.log = observation.log + "inner>"
+    let response = next(request)
+    observation.log = observation.log + "<inner"
+    return response
+  end
+  app.get("/hello/:name") do |request|
+    observation.log = observation.log + "handler"
+    let name = request.param("name")
+    test.assertTrue(name != null)
+    request.path = "/changed"
+    if name != null
+      return text(name)
+    end
+    return text("missing", 500)
+  end
+  ready(app)
+  let incoming = new Request("GET", "/hello/Ada")
+  expectResponse(app.handle(incoming), 200, "Ada")
+  test.assertEqual(observation.log, "outer>inner>handler<inner<outer")
+  test.assertEqual(incoming.path, "/hello/Ada")
+  test.assertTrue(incoming.param("name") == null)
+
+  let stopped = new App()
+  stopped.around() do |request, next|
+    return text("Stopped", 403)
+  end
+  stopped.get("/") do |request|
+    observation.calls = observation.calls + 1
+    return text("unreachable")
+  end
+  ready(stopped)
+  expectResponse(stopped.handle(new Request("GET", "/")), 403, "Stopped")
+  test.assertEqual(observation.calls, 0)
+end
+
+def continuationContract(): Void
+  let observation = new Observation()
+  let app = new App()
+  app.around() do |request, next|
+    observation.saved = next
+    let first = next(request)
+    next(request)
+    return first
+  end
+  app.get("/") do |request|
+    observation.calls = observation.calls + 1
+    return text("once")
+  end
+  ready(app)
+  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+  test.assertEqual(observation.calls, 1)
+
+  # An unused continuation also expires when its middleware returns.
+  let stopped = new App()
+  stopped.around() do |request, next|
+    observation.saved = next
+    return text("Stopped", 403)
+  end
+  stopped.get("/") do |request|
+    observation.calls = observation.calls + 1
+    return text("unreachable")
+  end
+  ready(stopped)
+  expectResponse(stopped.handle(new Request("GET", "/")), 403, "Stopped")
+  let saved = observation.saved
+  test.assertTrue(saved != null)
+  if saved != null
+    expectResponse(saved(new Request("GET", "/")), 500, "Internal Server Error")
+  end
+  test.assertEqual(observation.calls, 1)
+end
+
+def main(): Void
+  console.println("Example contracts")
+  exampleContract()
+  console.println("Routing contracts")
+  routingContract()
+  console.println("Configuration contracts")
+  configurationContract()
+  console.println("Middleware contracts")
+  middlewareContract()
+  console.println("Continuation contracts")
+  continuationContract()
+  console.println("Sumi contracts passed")
+end

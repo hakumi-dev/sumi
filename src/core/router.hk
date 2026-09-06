@@ -1,0 +1,64 @@
+namespace sumi
+
+internal class Route
+  public path: String = ""
+  public pattern: PathSegment?
+  public handler: fn(Request): Response
+  public next: Route?
+
+  def init(pattern: PathSegment?, handler: fn(Request): Response, next: Route?): Void
+    this.pattern = pattern
+    this.handler = handler
+    this.next = next
+  end
+end
+
+internal class Router
+  private routes: Route?
+
+  def add(path: String, handler: fn(Request): Response): ConfigurationError?
+    let parsed = parsePath(path)
+    if !parsed.valid || !validParameters(parsed.first)
+      return new ConfigurationError("Invalid GET pattern: " + path, "SUMI_ROUTE_PATTERN")
+    end
+    var route = this.routes
+    while route != null
+      if equivalentPatterns(route.pattern, parsed.first)
+        return new ConfigurationError("Duplicate GET pattern: " + path, "SUMI_ROUTE_DUPLICATE")
+      end
+      route = route.next
+    end
+    let added = new Route(parsed.first, handler, this.routes)
+    added.path = path
+    this.routes = added
+    return null
+  end
+
+  def dispatch(request: Request): Response
+    if request.method != "GET"
+      return text("Not Found", 404)
+    end
+    let path = parsePath(request.path)
+    if !path.valid
+      return text("Not Found", 404)
+    end
+    var selected: Route? = null
+    var route = this.routes
+    while route != null
+      if matchesPath(route.pattern, path.first)
+        if selected == null
+          selected = route
+        else if moreSpecific(route.pattern, selected.pattern)
+          selected = route
+        end
+      end
+      route = route.next
+    end
+    if selected == null
+      return text("Not Found", 404)
+    end
+    let response = selected.handler(request.matched(selected.pattern, path.first))
+    response.route = selected.path
+    return response
+  end
+end

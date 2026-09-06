@@ -1,0 +1,90 @@
+use host
+namespace sumi
+
+public class App
+  private router: Router = new Router()
+  private middleware: Middleware?
+  private pipeline: (fn(Request): Response)?
+  private error: ConfigurationError?
+
+  def get(path: String, handler: fn(Request): Response): Void
+    if !this.canConfigure()
+      return
+    end
+    this.error = this.router.add(path, handler)
+  end
+
+  # Explicit URL-to-file mapping; content is captured at registration.
+  def file(path: String, source: String, contentType: String): Void
+    if !this.canConfigure()
+      return
+    end
+    let body = host.readText(source)
+    if body == null
+      this.error = new ConfigurationError("Cannot read static file " + source + " for route " + path + ": " + host.errorMessage(), "SUMI_STATIC_READ")
+      return
+    end
+    if host.stringByteLength(body) > 1048576
+      this.error = new ConfigurationError("Static file " + source + " exceeds the 1048576-byte limit", "SUMI_STATIC_SIZE")
+      return
+    end
+    if !validContentType(contentType)
+      this.error = new ConfigurationError("Invalid content type for route " + path, "SUMI_CONTENT_TYPE")
+      return
+    end
+    this.get(path) do |request|
+      let response = new Response(200, body)
+      response.contentType = contentType
+      return response
+    end
+  end
+
+  def around(action: fn(Request, fn(Request): Response): Response): Void
+    if !this.canConfigure()
+      return
+    end
+    this.middleware = new Middleware(action, this.middleware)
+  end
+
+  def prepare(): ConfigurationError?
+    if this.error != null
+      return this.error
+    end
+    if this.pipeline != null
+      return null
+    end
+    let router = this.router
+    var pipeline: fn(Request): Response = fn(request)
+      return router.dispatch(request)
+    end
+    var middleware = this.middleware
+    while middleware != null
+      pipeline = wrapMiddleware(middleware.action, pipeline)
+      middleware = middleware.next
+    end
+    this.pipeline = pipeline
+    return null
+  end
+
+  def handle(request: Request): Response
+    let pipeline = this.pipeline
+    if this.error != null || pipeline == null
+      return failure("SUMI_APP_NOT_READY", "Dispatch requires a successfully prepared application")
+    end
+    let incoming = new Request(request.method, request.path)
+    incoming.query = request.query
+    incoming.requestId = request.requestId
+    return pipeline(incoming)
+  end
+
+  private def canConfigure(): Bool
+    if this.error != null
+      return false
+    end
+    if this.pipeline != null
+      this.error = new ConfigurationError("Application is already prepared", "SUMI_CONFIG_CLOSED")
+      return false
+    end
+    return true
+  end
+end

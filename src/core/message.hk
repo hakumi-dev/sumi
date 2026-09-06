@@ -1,0 +1,94 @@
+namespace sumi
+
+public class Request
+  public method: String
+  public path: String
+  public query: String = ""
+  public requestId: String = ""
+  private parameters: PathParameter?
+
+  def init(method: String, path: String): Void
+    this.method = method
+    this.path = path
+  end
+
+  def param(name: String): String?
+    var parameter = this.parameters
+    while parameter != null
+      if parameter.name == name
+        return parameter.value
+      end
+      parameter = parameter.next
+    end
+    return null
+  end
+
+  internal def matched(pattern: PathSegment?, path: PathSegment?): Request
+    let request = new Request(this.method, this.path)
+    request.query = this.query
+    request.requestId = this.requestId
+    var expected = pattern
+    var actual = path
+    while expected != null && actual != null
+      if isParameter(expected.value)
+        request.parameters = new PathParameter(parameterName(expected.value), actual.value, request.parameters)
+      end
+      expected = expected.next
+      actual = actual.next
+    end
+    return request
+  end
+end
+
+public class Response
+  public status: Int
+  public body: String
+  public route: String = ""
+  public diagnosticCode: String = ""
+  public diagnosticMessage: String = ""
+  public contentType: String = "text/plain; charset=utf-8"
+
+  def init(status: Int, body: String): Void
+    this.status = status
+    this.body = body
+  end
+end
+
+def text(body: String, status: Int = 200): Response
+  return new Response(status, body)
+end
+
+public class ConfigurationError
+  public message: String
+  public code: String
+
+  def init(message: String, code: String = "SUMI_CONFIG"): Void
+    this.message = message
+    this.code = code
+  end
+end
+
+internal class PathParameter
+  public name: String
+  public value: String
+  public next: PathParameter?
+
+  def init(name: String, value: String, next: PathParameter?): Void
+    this.name = name
+    this.value = value
+    this.next = next
+  end
+end
+
+def html(body: String, status: Int = 200): Response
+  let response = new Response(status, body)
+  response.contentType = "text/html; charset=utf-8"
+  return response
+end
+
+def failure(code: String, message: String, status: Int = 500): Response
+  let response = text("Internal Server Error", status)
+  response.diagnosticCode = code
+  response.diagnosticMessage = message
+  return response
+end

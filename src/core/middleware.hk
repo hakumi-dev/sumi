@@ -1,0 +1,49 @@
+namespace sumi
+
+internal class Middleware
+  public action: fn(Request, fn(Request): Response): Response
+  public next: Middleware?
+
+  def init(action: fn(Request, fn(Request): Response): Response, next: Middleware?): Void
+    this.action = action
+    this.next = next
+  end
+end
+
+internal class Continuation
+  private next: fn(Request): Response
+  private active: Bool = true
+  private used: Bool = false
+  private violated: Bool = false
+
+  def init(next: fn(Request): Response): Void
+    this.next = next
+  end
+
+  def invoke(request: Request): Response
+    if !this.active || this.used
+      this.violated = true
+      return failure("SUMI_NEXT_LIFETIME", "Middleware continuation was invoked more than once or after its callback returned")
+    end
+    this.used = true
+    return this.next(request)
+  end
+
+  def finish(response: Response): Response
+    this.active = false
+    if this.violated
+      return failure("SUMI_NEXT_LIFETIME", "Middleware continuation was invoked more than once or after its callback returned")
+    end
+    return response
+  end
+end
+
+def wrapMiddleware(action: fn(Request, fn(Request): Response): Response, next: fn(Request): Response): fn(Request): Response
+  return fn(request)
+    let continuation = new Continuation(next)
+    let response = action(request) do |forwarded|
+      return continuation.invoke(forwarded)
+    end
+    return continuation.finish(response)
+  end
+end
