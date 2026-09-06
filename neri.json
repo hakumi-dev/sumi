@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "defaultSourceSet": "web",
+  "sourceSets": {
+    "web": [
+      "examples/web/main.hk",
+      "examples/web/app/routes.hk",
+      "src/core/app.hk",
+      "src/core/content.hk",
+      "src/core/message.hk",
+      "src/core/middleware.hk",
+      "src/core/path.hk",
+      "src/core/router.hk",
+      "src/http/http.hk",
+      "src/http/logging.hk"
+    ],
+    "memory": [
+      "examples/memory.hk",
+      "examples/application.hk",
+      "src/core/app.hk",
+      "src/core/content.hk",
+      "src/core/message.hk",
+      "src/core/middleware.hk",
+      "src/core/path.hk",
+      "src/core/router.hk"
+    ],
+    "contracts": [
+      "tests/contracts.hk",
+      "examples/application.hk",
+      "src/core/app.hk",
+      "src/core/content.hk",
+      "src/core/message.hk",
+      "src/core/middleware.hk",
+      "src/core/path.hk",
+      "src/core/router.hk"
+    ],
+    "http-contracts": [
+      "tests/web.hk",
+      "src/core/app.hk",
+      "src/core/content.hk",
+      "src/core/message.hk",
+      "src/core/middleware.hk",
+      "src/core/path.hk",
+      "src/core/router.hk",
+      "src/http/http.hk",
+      "src/http/logging.hk"
+    ]
+  }
+}

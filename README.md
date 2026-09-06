@@ -33,7 +33,7 @@ To build and run from the repository root:
 
 ```sh
 mkdir -p build
-neri build examples/web/main.hk examples/web/app/*.hk src/core/*.hk src/http/*.hk --output build/sumi
+neri build --project neri.json --source-set web --output build/sumi
 ./build/sumi
 ```
 

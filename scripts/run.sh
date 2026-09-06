@@ -8,4 +8,4 @@ if ! command -v "$SUMI_COMPILER" >/dev/null 2>&1; then
   exit 127
 fi
 export SUMI_PUBLIC="${SUMI_PUBLIC:-$SUMI_ROOT/examples/web/public}"
-exec "$SUMI_COMPILER" run "$SUMI_ROOT/examples/web/main.hk" "$SUMI_ROOT"/examples/web/app/*.hk "$SUMI_ROOT"/src/core/*.hk "$SUMI_ROOT"/src/http/*.hk "$@"
+exec "$SUMI_COMPILER" run --project "$SUMI_ROOT/neri.json" --source-set web "$@"
