@@ -21,10 +21,15 @@ internal class Continuation
   end
 
   def invoke(request: Request): Response
-    if !this.active || this.used
-      this.violated = true
-      return failure("SUMI_NEXT_LIFETIME", "Middleware continuation was invoked more than once or after its callback returned")
+    if !this.active
+      return failure("SUMI_NEXT_EXPIRED", "Middleware next was called after its callback returned; call next synchronously inside the callback")
     end
+
+    if this.used
+      this.violated = true
+      return failure("SUMI_NEXT_REPEATED", "Middleware next was called more than once; reuse the first response instead of invoking next again")
+    end
+
     this.used = true
     return this.next(request)
   end
@@ -32,7 +37,7 @@ internal class Continuation
   def finish(response: Response): Response
     this.active = false
     if this.violated
-      return failure("SUMI_NEXT_LIFETIME", "Middleware continuation was invoked more than once or after its callback returned")
+      return failure("SUMI_NEXT_REPEATED", "Middleware next was called more than once; reuse the first response instead of invoking next again")
     end
     return response
   end

@@ -129,7 +129,10 @@ def configurationContract(): Void
     if error != null
       test.assertEqual(error.message, "Invalid GET pattern: " + pattern)
     end
-    expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+    let rejected = app.handle(new Request("GET", "/"))
+    expectResponse(rejected, 500, "Internal Server Error")
+    test.assertEqual(rejected.diagnosticCode, "SUMI_ROUTE_PATTERN")
+    test.assertEqual(rejected.diagnosticMessage, "Invalid GET pattern: " + pattern)
   end
   for pattern in ["/same", "/:name"]
     let app = new App()
@@ -223,7 +226,9 @@ def continuationContract(): Void
     return text("once")
   end
   ready(app)
-  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+  let repeated = app.handle(new Request("GET", "/"))
+  expectResponse(repeated, 500, "Internal Server Error")
+  test.assertEqual(repeated.diagnosticCode, "SUMI_NEXT_REPEATED")
   test.assertEqual(observation.calls, 1)
 
   # An unused continuation also expires when its middleware returns.
@@ -241,7 +246,9 @@ def continuationContract(): Void
   let saved = observation.saved
   test.assertTrue(saved != null)
   if saved != null
-    expectResponse(saved(new Request("GET", "/")), 500, "Internal Server Error")
+    let expired = saved(new Request("GET", "/"))
+    expectResponse(expired, 500, "Internal Server Error")
+    test.assertEqual(expired.diagnosticCode, "SUMI_NEXT_EXPIRED")
   end
   test.assertEqual(observation.calls, 1)
 end

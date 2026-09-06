@@ -56,6 +56,7 @@ def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
     event.level = "warning"
     event.code = "SUMI_HTTP_READ"
     event.message = "Connection ended or failed before complete request headers were received"
+    event.durationMs = elapsed(startedAt)
     emit(options, event)
     return
   end
@@ -117,12 +118,18 @@ def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
     event.code = "SUMI_HTTP_WRITE"
     event.message = "Socket write failed or exceeded the two-second deadline; response delivery is incomplete"
   end
-  let finishedAt = clock.milliseconds()
-  event.durationMs = -1
-  if startedAt != null && finishedAt != null
-    event.durationMs = finishedAt - startedAt
-  end
+  event.durationMs = elapsed(startedAt)
   emit(options, event)
+end
+
+def elapsed(startedAt: Int?): Int
+  let finishedAt = clock.milliseconds()
+
+  if startedAt != null && finishedAt != null
+    return finishedAt - startedAt
+  end
+
+  return -1
 end
 
 def serve(app: sumi.App, address: String, options: Options? = null): ServerError
@@ -194,4 +201,3 @@ def serve(app: sumi.App, address: String, options: Options? = null): ServerError
   end
   return new ServerError("SUMI_LISTEN_STOPPED", "Listener stopped")
 end
-

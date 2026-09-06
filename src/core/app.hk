@@ -67,9 +67,14 @@ public class App
   end
 
   def handle(request: Request): Response
+    let error = this.error
+    if error != null
+      return failure(error.code, error.message)
+    end
+
     let pipeline = this.pipeline
-    if this.error != null || pipeline == null
-      return failure("SUMI_APP_NOT_READY", "Dispatch requires a successfully prepared application")
+    if pipeline == null
+      return failure("SUMI_APP_NOT_READY", "Call App.prepare() and check its result before dispatching requests")
     end
     let incoming = new Request(request.method, request.path)
     incoming.query = request.query

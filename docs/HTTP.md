@@ -96,7 +96,8 @@ diagnostic messages remain the application's responsibility.
 | `SUMI_ROUTE_DUPLICATE` | An equivalent pattern already exists. Remove or distinguish it. |
 | `SUMI_CONFIG_CLOSED` | Registration occurred after preparation. Construct all routes and middleware before serving. |
 | `SUMI_APP_NOT_READY` | Dispatch was attempted before valid preparation. Inspect `prepare()`. |
-| `SUMI_NEXT_LIFETIME` | A middleware continuation was called repeatedly or after return. Keep one synchronous invocation. |
+| `SUMI_NEXT_REPEATED` | Middleware called `next` more than once. Reuse the first response. |
+| `SUMI_NEXT_EXPIRED` | Middleware called `next` after its callback returned. Keep the call inside the synchronous callback. |
 | `SUMI_ROUTE_NOT_FOUND` | No route was selected for the request. |
 | `SUMI_RESPONSE_STATUS` | A response status is outside 200–599. The message includes the invalid status. |
 | `SUMI_RESPONSE_SIZE` | A handler response exceeds 1 MiB. |
