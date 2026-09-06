@@ -2,6 +2,16 @@
   "version": 1,
   "defaultSourceSet": "web",
   "sourceSets": {
+    "cli": [
+      "cli/main.hk",
+      "src/core/app.hk",
+      "src/core/content.hk",
+      "src/core/environment.hk",
+      "src/core/message.hk",
+      "src/core/middleware.hk",
+      "src/core/path.hk",
+      "src/core/router.hk"
+    ],
     "web": [
       "examples/web/main.hk",
       "examples/web/app/routes.hk",
