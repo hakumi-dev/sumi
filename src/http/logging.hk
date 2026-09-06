@@ -1,0 +1,69 @@
+use host
+namespace sumiweb
+
+class Options
+  public onListening: (fn(String): Void)?
+  public log: (fn(LogEvent): Void)?
+end
+
+class LogEvent
+  public level: String = "info"
+  public event: String
+  public requestId: String = ""
+  public status: Int = 0
+  public durationMs: Int = 0
+  public method: String = ""
+  public route: String = ""
+  public code: String = ""
+  public message: String = ""
+
+  def init(event: String): Void
+    this.event = event
+  end
+end
+
+def emit(options: Options?, event: LogEvent): Void
+  if options != null
+    let log = options.log
+    log(event) if log != null
+  end
+end
+
+# Escape controls and delimiters so each event remains exactly one log line.
+def quoted(value: String): String
+  var result = "\""
+  var index = 0
+  var start = 0
+  let length = host.stringByteLength(value)
+  while index < length
+    let byte = host.stringByteAt(value, index) as Int
+    if byte == 34 || byte == 92 || byte < 32 || byte == 127
+      result = result + host.stringSlice(value, start, index - start)
+      if byte == 34
+        result = result + "\\\""
+      else if byte == 92
+        result = result + "\\\\"
+      else
+        result = result + "?"
+      end
+      start = index + 1
+    end
+    index = index + 1
+  end
+  result = result + host.stringSlice(value, start, length - start)
+  return result + "\""
+end
+
+def format(event: LogEvent): String
+  return "level=" + quoted(event.level) + " event=" + quoted(event.event) + " request_id=" + quoted(event.requestId) + " status=" + (event.status as String) + " duration_ms=" + (event.durationMs as String) + " method=" + quoted(event.method) + " route=" + quoted(event.route) + " code=" + quoted(event.code) + " message=" + quoted(event.message)
+end
+
+class ServerError
+  public code: String
+  public message: String
+
+  def init(code: String, message: String): Void
+    this.code = code
+    this.message = message
+  end
+end

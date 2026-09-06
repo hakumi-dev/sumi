@@ -1,0 +1,197 @@
+use http
+use clock
+use host
+use sumi
+namespace sumiweb
+
+def wire(response: sumi.Response, head: Bool, requestId: Int = 0): String
+  var status = response.status
+  var body = response.body
+  var contentType = response.contentType
+  if status < 200 || status > 599 || host.stringByteLength(body) > 1048576 || !sumi.validContentType(contentType)
+    status = 500
+    body = "Internal Server Error"
+    contentType = "text/plain; charset=utf-8"
+  end
+  var headers = "HTTP/1.1 " + (status as String) + " Response\r\nConnection: close\r\nContent-Type: " + contentType + "\r\nX-Content-Type-Options: nosniff\r\n"
+  headers = headers + "X-Request-Id: " + (requestId as String) + "\r\n"
+  if status == 405
+    headers = headers + "Allow: GET\r\n"
+  end
+  if status == 204 || status == 304
+    return headers + "\r\n"
+  end
+  if status == 205
+    body = ""
+  end
+  headers = headers + "Content-Length: " + (host.stringByteLength(body) as String) + "\r\n\r\n"
+  return headers + (head ? "" : body)
+end
+
+def rejection(status: Int): String
+  if status == 405
+    return "Only GET requests are supported"
+  else if status == 408
+    return "Request headers did not complete within the two-second deadline"
+  else if status == 417
+    return "Expect headers are unsupported"
+  else if status == 431
+    return "Request headers exceed the 8192-byte limit"
+  else if status == 505
+    return "Only HTTP/1.1 is supported"
+  end
+  return "Malformed request headers, target, or unsupported body framing"
+end
+
+def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
+  let startedAt = clock.milliseconds()
+  let event = new LogEvent("http.request.completed")
+  event.requestId = requestId as String
+  let started = new LogEvent("http.request.started")
+  started.requestId = event.requestId
+  emit(options, started)
+  let head = http.readHead(fd)
+  if head.status == 0
+    event.event = "http.request.incomplete"
+    event.level = "warning"
+    event.code = "SUMI_HTTP_READ"
+    event.message = "Connection ended or failed before complete request headers were received"
+    emit(options, event)
+    return
+  end
+  var response = sumi.text("Request rejected", head.status)
+  var omitBody = false
+  if head.status == 200
+    let parsed = http.parse(head.text)
+    omitBody = parsed.head
+    response = sumi.text("Request rejected", parsed.status)
+    let incoming = parsed.request
+    if incoming != null
+      let request = new sumi.Request(incoming.method, incoming.path)
+      request.query = incoming.query
+      request.requestId = event.requestId
+      event.method = request.method
+      response = app.handle(request)
+    else
+      event.code = "SUMI_HTTP_" + (parsed.status as String)
+      event.message = rejection(parsed.status)
+    end
+  else
+    event.code = "SUMI_HTTP_" + (head.status as String)
+    event.message = rejection(head.status)
+  end
+  event.route = response.route
+  if response.diagnosticCode != ""
+    event.code = response.diagnosticCode
+    event.message = response.diagnosticMessage
+  end
+  if response.status < 200 || response.status > 599
+    event.code = "SUMI_RESPONSE_STATUS"
+    event.message = "Response status " + (response.status as String) + " is outside 200..599"
+  else if host.stringByteLength(response.body) > 1048576
+    event.code = "SUMI_RESPONSE_SIZE"
+    event.message = "Response exceeds the 1048576-byte limit"
+  else if !sumi.validContentType(response.contentType)
+    event.code = "SUMI_RESPONSE_CONTENT_TYPE"
+    event.message = "Response content type is invalid or contains header controls"
+  end
+  let output = wire(response, omitBody, requestId)
+  let status = host.parseInt(host.stringSlice(output, 9, 3))
+  event.status = status if status != null
+  if event.status >= 500
+    event.level = "error"
+  else if event.status >= 400
+    event.level = "warning"
+  end
+  if event.status == 404 && event.code == "" && event.route == ""
+    event.code = "SUMI_ROUTE_NOT_FOUND"
+    event.message = "No registered route matched the request"
+  end
+  if event.status >= 500 && event.code == ""
+    event.code = "SUMI_HANDLER_ERROR"
+    event.message = "Application returned a server error without diagnostic details"
+  end
+  if !http.writeText(fd, output)
+    event.event = "http.response.write_failed"
+    event.level = "error"
+    event.code = "SUMI_HTTP_WRITE"
+    event.message = "Socket write failed or exceeded the two-second deadline; response delivery is incomplete"
+  end
+  let finishedAt = clock.milliseconds()
+  event.durationMs = -1
+  if startedAt != null && finishedAt != null
+    event.durationMs = finishedAt - startedAt
+  end
+  emit(options, event)
+end
+
+def serve(app: sumi.App, address: String, options: Options? = null): ServerError
+  let configurationError = app.prepare()
+  if configurationError != null
+    return new ServerError(configurationError.code, configurationError.message)
+  end
+  if host.stringByteLength(address) < 11 || host.stringSlice(address, 0, 10) != "127.0.0.1:"
+    return new ServerError("SUMI_LISTEN_ADDRESS", "Address must be 127.0.0.1:<port>")
+  end
+  let portText = host.stringSlice(address, 10, host.stringByteLength(address) - 10)
+  let port = host.parseInt(portText)
+  if port == null || port < 1 || port > 65535
+    return new ServerError("SUMI_LISTEN_PORT", "Port must be an integer from 1 to 65535")
+  end
+  unsafe
+    let listener = http.netOpen()
+    if listener < 0
+      return new ServerError("SUMI_LISTEN_OPEN", "Open listener: " + http.socketError())
+    end
+    var operation = ""
+    if http.netConfigure(listener) < 0
+      operation = "configure"
+    else if http.netBind(listener, port) < 0
+      operation = "bind"
+    else if http.netListen(listener) < 0
+      operation = "listen"
+    end
+    if operation != ""
+      let detail = http.socketError()
+      http.netClose(listener)
+      return new ServerError("SUMI_LISTEN_SETUP", "Cannot " + operation + " listener at " + address + ": " + detail)
+    end
+    if options != null
+      let onListening = options.onListening
+      onListening(address) if onListening != null
+    end
+    var requestId = 0
+    while true
+      let ready = http.netPoll(listener, 0, -1)
+      if ready == -1
+        let error = new ServerError("SUMI_LISTEN_POLL", "Wait for connection: " + http.socketError())
+        http.netClose(listener)
+        return error
+      end
+      if ready > 0
+        let fd = http.netAccept(listener)
+        if fd == -1
+          let error = new ServerError("SUMI_LISTEN_ACCEPT", "Accept connection: " + http.socketError())
+          http.netClose(listener)
+          return error
+        end
+        if fd >= 0
+          requestId = requestId + 1
+          if http.netConfigure(fd) == 0
+            connection(fd, app, options, requestId)
+          else
+            let event = new LogEvent("http.connection.failed")
+            event.requestId = requestId as String
+            event.level = "error"
+            event.code = "SUMI_CONNECTION_CONFIGURE"
+            event.message = http.socketError()
+            emit(options, event)
+          end
+          http.netClose(fd)
+        end
+      end
+    end
+  end
+  return new ServerError("SUMI_LISTEN_STOPPED", "Listener stopped")
+end
+

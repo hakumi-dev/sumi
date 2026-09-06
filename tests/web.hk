@@ -1,0 +1,48 @@
+use sumi
+use sumiweb
+use host
+use console
+
+def main(): Void
+  let app = new sumi.App()
+  app.get("/failure/:name") do |request|
+    return sumi.failure("APP_GREETING_UNAVAILABLE", "Greeting service unavailable")
+  end
+  app.get("/unicode") do |request|
+    return sumi.failure("APP_UNICODE", "Diagnóstico: 水\nsecond line")
+  end
+  app.get("/invalid") do |request|
+    let response = sumi.text("must not leak")
+    response.contentType = "text/html\r\nInjected: yes"
+    return response
+  end
+  app.get("/status/:value") do |request|
+    let raw = request.param("value")
+    if raw == null
+      return sumi.text("missing", 400)
+    end
+    let status = host.parseInt(raw)
+    if status == null
+      return sumi.text("invalid", 400)
+    end
+    return sumi.text("payload", status)
+  end
+  app.get("/context") do |request|
+    return sumi.text(request.query + ":" + request.requestId)
+  end
+  let options = new sumiweb.Options()
+  options.onListening = fn(address)
+    console.println("READY")
+  end
+  options.log = fn(event)
+    console.println(sumiweb.format(event))
+  end
+  let port = host.environment("PORT")
+  if port == null
+    host.exit(1)
+    return
+  end
+  let error = sumiweb.serve(app, "127.0.0.1:" + port, options)
+  console.println(error.code + ": " + error.message)
+  host.exit(1)
+end
