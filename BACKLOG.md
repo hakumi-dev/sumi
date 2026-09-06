@@ -1,8 +1,8 @@
 # Sumi implementation backlog
 
-Review-ready cards for the static-web milestone. IDs below are local planning
-IDs, not published issue numbers. Every card is proposed unless stated otherwise.
-The product reference is in `docs/`; this file tracks pending work.
+The [Sumi board](https://github.com/orgs/hakumi-dev/projects/6) tracks delivery
+status. Linked issues hold acceptance, dependencies, and remaining work. Local
+SUMI IDs preserve the delivery sequence. Product contracts are in `docs/`.
 
 ## Verified baseline
 
@@ -26,9 +26,9 @@ The product reference is in `docs/`; this file tracks pending work.
 - `scripts/check-compatibility.sh` reports the selected installation and verifies
   compilation or the complete Debug/Release behavior suite. The current contract
   and tested toolchain identity are declared in `docs/COMPATIBILITY.md`.
-- Existing issue #1 remains open and describes the former `main.hk` sketch.
-  Its implementation is now represented by the core and in-memory example;
-  reconcile its acceptance and links before closing it on the board.
+- The [in-memory baseline](https://github.com/hakumi-dev/sumi/issues/1) is
+  implemented in `examples/application.hk` and `examples/memory.hk`, with behavior
+  coverage in `tests/contracts.hk`.
 
 Current gaps include dependence on low-level HTTP helpers, grouped parser/I/O
 errors, IDs that repeat after restart, manual restart for asset changes, text-only
@@ -43,24 +43,27 @@ language/runtime contract remains unavailable.
 
 | ID | Priority | Title | Depends on |
 | --- | --- | --- | --- |
-| SUMI-01 | P0 | Define the supported Neri transport contract | Baseline |
-| SUMI-02 | P0 | Preserve precise error causes across boundaries | 01 |
-| SUMI-03 | P0 | Make request logs configurable and correlatable | 02 |
-| SUMI-04 | P0 | Stop the server and release resources cleanly | 01, 02 |
-| SUMI-05 | P1 | Reload the application during development | 03, 04 |
-| SUMI-06 | P1 | Create applications with an optional directory convention | 01 |
-| SUMI-07 | P1 | Support headers and correct HEAD responses | 01, 02 |
-| SUMI-08 | P1 | Return useful, customizable error pages | 02, 03, 07 |
-| SUMI-09 | P2 | Serve binary assets without text conversion | 01, 07 |
-| SUMI-10 | P2 | Mount static directories with explicit boundaries | 05, 09 |
-| SUMI-11 | P2 | Revalidate cached assets | 07, 10 |
-| SUMI-12 | P2 | Build and verify a standalone website distribution | 04, 06, 08, 10, 11 |
-| SUMI-13 | P2 | Operate a packaged website as a managed service | 12 |
+| [SUMI-01](https://github.com/hakumi-dev/sumi/issues/2) | P0 | Define the supported Neri transport contract | Baseline |
+| [SUMI-02](https://github.com/hakumi-dev/sumi/issues/3) | P0 | Preserve precise error causes across boundaries | 01 |
+| [SUMI-03](https://github.com/hakumi-dev/sumi/issues/4) | P0 | Make request logs configurable and correlatable | 02 |
+| [SUMI-04](https://github.com/hakumi-dev/sumi/issues/5) | P0 | Stop the server and release resources cleanly | 01, 02 |
+| [SUMI-05](https://github.com/hakumi-dev/sumi/issues/6) | P1 | Reload the application during development | 03, 04 |
+| [SUMI-06](https://github.com/hakumi-dev/sumi/issues/7) | P1 | Create applications with an optional directory convention | 01 |
+| [SUMI-07](https://github.com/hakumi-dev/sumi/issues/8) | P1 | Support headers and correct HEAD responses | 01, 02 |
+| [SUMI-08](https://github.com/hakumi-dev/sumi/issues/9) | P1 | Return useful, customizable error pages | 02, 03, 07 |
+| [SUMI-09](https://github.com/hakumi-dev/sumi/issues/10) | P2 | Serve binary assets without text conversion | 01, 07 |
+| [SUMI-10](https://github.com/hakumi-dev/sumi/issues/11) | P2 | Mount static directories with explicit boundaries | 05, 09 |
+| [SUMI-11](https://github.com/hakumi-dev/sumi/issues/12) | P2 | Revalidate cached assets | 07, 10 |
+| [SUMI-12](https://github.com/hakumi-dev/sumi/issues/13) | P2 | Build and verify a standalone website distribution | 04, 06, 08, 10, 11 |
+| [SUMI-13](https://github.com/hakumi-dev/sumi/issues/14) | P2 | Operate a packaged website as a managed service | 12 |
+| [SUMI-14](https://github.com/hakumi-dev/sumi/issues/15) | P1 | Evaluate Neri in a persistent application console | 06, Neri #36 |
 
 Start with 01–04. Card 06 can proceed independently after 01. Deliver 05 next
 for the immediate edit/restart pain. This sequence adds no database or ORM.
 
 ## SUMI-01 — Define the supported Neri transport contract
+
+**Current delivery:** Implemented: compatibility checker, tested toolchain identity, and v2 compilation units. Remaining: stable transport capability boundary and complete language dependency verification.
 
 **Problem:** The adapter calls low-level HTTP helpers; a shared `0.2.0-dev`
 version string alone cannot establish compatibility.
@@ -81,8 +84,10 @@ capability fixture; no compiler test duplication.
 
 ## SUMI-02 — Preserve precise error causes across boundaries
 
+**Current delivery:** Implemented: original configuration causes, distinct repeated/expired next codes, and safe public 500 bodies. Remaining: finer transport causes and preservation when middleware replaces a failed response.
+
 **Problem:** Some 400s share one message; read/write failures combine timeouts
-and socket errors; continuation misuse combines repeated and expired calls.
+and socket errors; middleware response replacement can lose the original cause.
 
 **Scope:** Carry code, operation, cause, safe context, and corrective guidance.
 Keep diagnostic data separate from public responses. Preserve a diagnostic when
@@ -101,8 +106,9 @@ replacement regression; assert internal details never appear in public bodies.
 
 ## SUMI-03 — Make request logs configurable and correlatable
 
-**Problem:** IDs repeat after restart, there is one formatter, and early exits
-lack consistent timing. Application logs have no shared request-scoped API.
+**Current delivery:** Implemented: typed sink, severity filtering, quoted text output, listener-local request IDs, and elapsed time for incomplete reads. Remaining: JSON output, cross-instance correlation, timestamps, application context, and sink-failure policy.
+
+**Problem:** IDs repeat after restart and there is one formatter. Application logs have no shared request-scoped API.
 
 **Scope:** Typed log sink, level filtering, readable console and JSON-line
 formatters, server-instance/request correlation, timestamps, duration, and an
@@ -156,7 +162,9 @@ Distribution mode never watches or reloads files.
 
 ## SUMI-06 — Create applications with an optional directory convention
 
-**Problem:** Source lists and asset roots must currently be assembled manually.
+**Current delivery:** Implemented and exercised: new/n, server/s, test/t, build/b, configurable directories, outside-checkout generation, collision refusal, and environment precedence. Remaining: explicit check entry point and acceptance of the transport/tooling dependency boundary.
+
+**Problem:** Generated applications need a complete, configurable development command contract.
 
 **Scope:** A project creation command or generator with `app/`, `public/`,
 `tests/`, and `main.hk`; add `config/` only when useful. Explicit source and asset
@@ -265,6 +273,8 @@ and conditional HEAD against one fixture.
 
 ## SUMI-12 — Build and verify a standalone website distribution
 
+**Current delivery:** Implemented: native build/b executable output. Remaining: complete relocatable distribution with assets and its static-delivery dependencies.
+
 **Problem:** The example runs from the checkout with external asset paths;
 there is no validated application distribution contract.
 
@@ -306,6 +316,13 @@ activation, and rollback in one controlled deployment scenario. Verify service
 identity, listener binding, TLS access, and logs.
 
 **Neri dependency:** [neri#35](https://github.com/hakumi-dev/neri/issues/35) for declared runtime dependencies; consume the artifact contract from SUMI-12.
+
+## SUMI-14 — Evaluate Neri in a persistent application console
+
+**Status:** Blocked on [Neri #36](https://github.com/hakumi-dev/neri/issues/36).
+[The console issue](https://github.com/hakumi-dev/sumi/issues/15) defines application bootstrap,
+persistent object identity, diagnostic recovery, and session disposal. The
+current `console/c` command reports unavailable.
 
 ## Shared completion contract
 
