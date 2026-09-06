@@ -3,7 +3,7 @@
 Sumi targets Linux with Neri's native compiler and runtime. Compatibility depends
 on the available language and runtime contracts, not just the version string.
 The verified installation is `neri 0.2.0-dev`, toolchain identity
-`0441f03f145c22393c2746d48785dd601921726739d4b985f8bacd0abb6e4286`.
+`8c557a3d44d1ccbcaa5841664010fce449b541baa0ee6bb68debcad1497b1e5c`.
 An installation with the same version string may expose different capabilities.
 
 ## Verification

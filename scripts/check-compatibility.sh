@@ -32,18 +32,13 @@ SUMI_WORK="$(mktemp -d)"
 trap 'rm -r -- "$SUMI_WORK"' EXIT
 
 if [[ "$SUMI_MODE" == compile ]]; then
-  for source_set in contracts memory web http-contracts; do
+  for source_set in contracts memory web http-contracts cli; do
     printf 'Checking source set: %s\n' "$source_set"
     if ! "$NERI" build --project "$SUMI_ROOT/neri.json" --source-set "$source_set" --output "$SUMI_WORK/$source_set"; then
       printf 'SUMI_COMPAT_BUILD: Cannot build source set %s. Compiler diagnostics above identify the failed contract; see docs/COMPATIBILITY.md before selecting another toolchain.\n' "$source_set" >&2
       exit 1
     fi
   done
-
-  if ! "$NERI" build "$SUMI_ROOT/cli/main.hk" "$SUMI_ROOT"/src/core/*.hk --output "$SUMI_WORK/cli"; then
-    printf 'SUMI_COMPAT_BUILD: Cannot build the native CLI. Check host process/file and callback support in docs/COMPATIBILITY.md.\n' >&2
-    exit 1
-  fi
 
   printf 'Sumi compilation contracts passed; runtime and HTTP behavior were not checked.\n'
 else
