@@ -1,5 +1,6 @@
 use sumi
 use host
+
 namespace example
 
 class GreetingService
@@ -19,7 +20,9 @@ def application(greetings: GreetingService, log: fn(String): Void): App
 
   app.around() do |request, next|
     let response = next(request)
+
     log(request.path + " -> " + (response.status as String))
+
     return response
   end
 
@@ -29,24 +32,31 @@ def application(greetings: GreetingService, log: fn(String): Void): App
 
   app.get("/hello/:name") do |request|
     let name = request.param("name")
+
     if name == null
       return text("Missing name", 400)
     end
+
     return text(greetings.greet(name))
   end
 
   app.get("/square/:value") do |request|
     let raw = request.param("value")
+
     if raw == null
       return text("Missing value", 400)
     end
+
     let value = host.parseInt(raw)
+
     if value == null
       return text("Expected an integer", 400)
     end
+
     if value < -1000 || value > 1000
       return text("Expected an integer between -1000 and 1000", 400)
     end
+
     return text((value * value) as String)
   end
 
