@@ -21,6 +21,6 @@ for mode in debug release; do
   diff -u "$SUMI_WORK/expected" "$SUMI_WORK/actual"
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set web "${flags[@]}" --output "$SUMI_WORK/site-$mode"
   "$SUMI_COMPILER" build --project "$SUMI_ROOT/neri.json" --source-set http-contracts "${flags[@]}" --output "$SUMI_WORK/web-$mode"
-  python3 "$SUMI_ROOT/tests/http_contracts.py" "$SUMI_WORK/site-$mode" "$SUMI_WORK/web-$mode"
+  bash "$SUMI_ROOT/tests/http_contracts.sh" "$SUMI_WORK/site-$mode" "$SUMI_WORK/web-$mode"
   printf 'Sumi %s passed\n' "$mode"
 done

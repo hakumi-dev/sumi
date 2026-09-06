@@ -124,7 +124,7 @@ through captured values; Sumi does not define a persistence layer.
 scripts/test.sh
 ```
 
-Requires Neri and Python 3. Compiles and executes the core contracts, the
+Requires Neri, Bash, curl, and GNU core utilities. Compiles and executes the core contracts, the
 in-memory example, and real HTTP tests in Debug and Release. HTTP tests cover
 asset bytes and content types, route isolation, error responses, startup
 failures, and diagnostic correlation.
