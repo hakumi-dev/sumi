@@ -15,6 +15,8 @@ grep -qF SUMI_CLI_DESTINATION "$SUMI_TEST_WORK/error"
 [[ "$(cat "$project/keep.txt")" == 'user content' ]]
 "$cli" new --help > /dev/null
 [[ ! -e "$SUMI_TEST_WORK/--help" ]]
+if timeout 5 "$cli" server --project "$project" --port '' > "$SUMI_TEST_WORK/error" 2>&1; then fail 'empty port accepted'; fi
+grep -qF 'SUMI_CLI_ARGUMENT: Missing port' "$SUMI_TEST_WORK/error"
 mv "$project/app" "$project/application"
 mv "$project/public" "$project/assets"
 sed -i 's@app/routes.hk@application/routes.hk@g' "$project/neri.json"
