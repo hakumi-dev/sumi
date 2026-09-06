@@ -1,84 +1,130 @@
 # Sumi
 
-Sumi is an experimental web framework design for Neri. [main.hk](main.hk) is a
-consumer-side API sketch, not an executable example or an installed library.
-This repository contains the framework design; it has no runnable library or
-automated test suite yet. The [Neri language contract](https://github.com/hakumi-dev/neri/blob/main/docs/LANGUAGE.md)
-describes implemented language features.
+Sumi is a web framework written in Neri. Applications register typed handlers,
+serve pages and static assets, and compose synchronous middleware. Dependencies
+are ordinary constructor arguments and captured values.
 
-The sketch covers a static route, a captured application dependency, validated
-integer input, and a middleware wrapping dispatch. It uses an in-memory request;
-there is no listening socket. Its intended output is:
+The routing core works in memory. The HTTP adapter connects it to a loopback
+server and records structured request diagnostics.
 
-```text
-/hello/Ada -> 200
-Hello, Ada!
+## Run the website
+
+Install Neri with trailing `do` blocks and the HTTP and clock standard libraries.
+From this repository:
+
+```sh
+scripts/run.sh
 ```
 
-## Proposed API contracts
+Open **http://127.0.0.1:8080/**. The example serves a page, a stylesheet, and a
+JavaScript interaction. The terminal shows request events and errors.
 
-Function types below use proposed `fn(ArgumentTypes): ReturnType` notation.
-These are design signatures, not declarations accepted by the current compiler.
+```sh
+PORT=3000 scripts/run.sh
+NERI=/path/to/neri scripts/run.sh
+```
 
-| API | Proposed type and behavior |
-| --- | --- |
-| `App()` | Creates a mutable route and middleware registry. |
-| `app.get(path, handler)` | Takes `String` and `fn(Request): Response`; returns `Void`. Duplicate GET patterns are registration errors. |
-| `app.around(middleware)` | Takes `fn(Request, fn(Request): Response): Response`; returns `Void`. First registered middleware is outermost. |
-| `app.handle(request)` | Takes `Request`, returns `Response`. Dispatches by method and path; an unmatched request returns 404. Middleware wraps that response too. |
-| `Request(method, path)` | Creates an in-memory request from two strings. This sketch uses literal paths without query strings or percent encoding. |
-| `request.path` | A `String` path. |
-| `request.param(name)` | Takes `String`, returns `String?`. A missing key is explicit, not a cast or exception. |
-| `text(body, status = 200)` | Takes `String` and `Int`, returns a plain-text `Response`. |
-| `response.status`, `response.body` | Readable `Int` and `String` values. |
+The script selects the example's public directory independently of the current
+working directory. Set `SUMI_PUBLIC` to serve a different directory containing
+the three files registered by the example. Files are read during registration;
+restart the process after editing them.
 
-A `:name` pattern matches one nonempty path segment. Literal routes take
-precedence over parameterized routes. Structurally equivalent parameterized
-patterns are registration errors, even if their parameter names differ.
-Route parameters belong to the matched handler's request; middleware receives
-the incoming request. Middleware may return early or call its continuation once
-synchronously. This is a framework contract, not an exactly-once type guarantee.
+To build and run from the repository root:
 
-## Typing and syntax boundary
+```sh
+mkdir -p build
+neri build examples/web/main.hk examples/web/app/*.hk src/core/*.hk src/http/*.hk --output build/sumi
+./build/sumi
+```
 
-Already supported by Neri: classes, explicit function signatures, local type
-inference, optional strings and integers, null refinement, checked arithmetic,
-and `host.parseInt`. The numeric range check keeps multiplication within bounds.
+The executable needs its configured public directory at runtime. It does not
+embed the website files.
 
-Proposed language additions used by this sketch:
+## An application
 
-- `fn(parameters) ... end` expressions passed as ordinary call arguments.
-- Function values, their type notation, and calls through a function value.
-- Contextual callback typing: `get` supplies `Request` and `Response`; `around`
-  also supplies the continuation type. Each return must satisfy that contract.
-- Escaping closures that retain captured managed values after `application`
-  returns. The sketch captures the immutable `greetings` binding; it does not
-  establish semantics for capturing reassigned local variables.
+```neri
+use sumi
+use sumiweb
+use console
+use host
 
-`App`, `Request`, `Response`, and `text` are proposed Sumi APIs. `use sumi` only
-exposes a namespace in current Neri; it does not fetch or load a package.
+def main(): Void
+  let app = new sumi.App()
+  app.get("/") do |request|
+    return sumi.html("<!doctype html><html lang=\"en\"><title>Hello</title><h1>Hello, Sumi!</h1></html>")
+  end
 
-The sketch deliberately keeps public application signatures explicit and
-infers callback parameters from those contracts. Dependencies are constructor
-arguments. Input begins as text and becomes an `Int` only after checked parsing;
-this is not schema-based body decoding. It requires no user-defined generics,
-reflection, dependency container, or implicit error propagation.
+  let options = new sumiweb.Options()
+  options.onListening = fn(address)
+    console.println("Listening on http://" + address)
+  end
+  options.log = fn(event)
+    console.println(sumiweb.format(event))
+  end
 
-## Review cases
+  let error = sumiweb.serve(app, "127.0.0.1:8080", options)
+  console.println(error.code + ": " + error.message)
+  host.exit(1)
+end
+```
 
-These are acceptance examples for the design, not an automated test suite.
+Save this as `app.hk` and compile it alongside `src/core/*.hk src/http/*.hk`.
+`serve` prepares the application before opening a socket. Startup and listener
+failures return a `ServerError` with separate `code` and `message` fields; a running server serves until terminated.
 
-| Request | Expected status | Expected body |
-| --- | --- | --- |
-| `GET /` | 200 | `Hello, Sumi!` |
-| `GET /hello/Ada` | 200 | `Hello, Ada!` |
-| `GET /square/12` | 200 | `144` |
-| `GET /square/nope` | 400 | `Expected an integer` |
-| `GET /square/1001` | 400 | `Expected an integer between -1000 and 1000` |
-| `GET /missing` | 404 | Framework-defined plain-text body |
+To register files:
 
-The dependency remains usable after `application` returns. Logging occurs after
-dispatch, once per request, including validation failures and unmatched routes.
-Callbacks with incompatible parameter or return types must fail compilation.
+```neri
+app.file("/", "public/index.html", "text/html; charset=utf-8")
+app.file("/assets/site.css", "public/site.css", "text/css; charset=utf-8")
+```
 
-Delivery scope and ordering are tracked in [issue #1](https://github.com/hakumi-dev/sumi/issues/1).
+Only registered URLs are exposed. There is no directory browsing or automatic
+conversion from a request path to a disk path. Static files are UTF-8 text,
+including HTML, CSS, JavaScript, and SVG, up to 1 MiB each. Binary images and
+fonts are not supported by the current file API.
+
+## Project structure
+
+Applications choose their directory layout. An optional convention is:
+
+```text
+app/           Routes, handlers, and application services
+public/        Website assets
+config/        Configuration, when needed
+tests/         Application contracts
+main.hk        Composition and startup
+```
+
+The compiler receives source files explicitly, and file registration receives
+explicit filesystem paths. Folder names have no special runtime meaning.
+
+This repository separates library code from examples:
+
+```text
+src/core/             Requests, responses, routing, middleware, static registration
+src/http/             HTTP adapter, response serialization, structured logging
+examples/web/app/     Example route registration
+examples/web/public/  Example HTML, CSS, and JavaScript
+examples/web/main.hk  Example startup
+tests/                In-memory and real HTTP contracts
+scripts/              Run and verification commands
+```
+
+Application services do not need to know about sockets. Handlers receive services
+through captured values; Sumi does not define a persistence layer.
+
+## Reference and verification
+
+- [API](docs/API.md): configuration, routing, middleware, and static content.
+- [HTTP and diagnostics](docs/HTTP.md): serving, logs, error codes, and limits.
+- [Core structure](docs/ARCHITECTURE.md): responsibilities and lifetime.
+
+```sh
+scripts/test.sh
+```
+
+Requires Neri and Python 3. Compiles and executes the core contracts, the
+in-memory example, and real HTTP tests in Debug and Release. HTTP tests cover
+asset bytes and content types, route isolation, error responses, startup
+failures, and diagnostic correlation.
