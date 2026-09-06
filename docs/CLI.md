@@ -24,6 +24,8 @@ You can also use `bin/sumi` directly without installing it.
 callbacks, managed captures, host process/file operations, and the HTTP and clock
 standard libraries used by the framework. The CLI forwards compiler diagnostics
 and nonzero exit status. A missing compiler produces `SUMI_CLI_COMPILER`.
+Use the [compatibility checker](COMPATIBILITY.md) to verify a selected toolchain
+before starting an application.
 
 ## Commands
 

@@ -10,6 +10,8 @@ fi
 SUMI_WORK="$(mktemp -d)"
 trap 'rm -rf -- "$SUMI_WORK"' EXIT
 
+bash "$SUMI_ROOT/tests/compatibility.sh"
+
 for mode in debug release; do
   flags=()
   if [[ "$mode" == release ]]; then flags+=(--release); fi

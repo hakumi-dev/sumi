@@ -53,7 +53,7 @@ A `LogEvent` has these fields:
 | `event` | The operation and outcome. |
 | `requestId` | Decimal connection sequence within this listener invocation. |
 | `status` | Status selected for the wire response, or 0 when none exists. |
-| `durationMs` | Elapsed read, handler, and write time; -1 if the clock is unavailable. Early incomplete reads currently use 0. |
+| `durationMs` | Elapsed read, handler, and write time, including incomplete reads; -1 if the clock is unavailable. Start events use 0. |
 | `method` | Accepted request method; empty for requests rejected before dispatch. |
 | `route` | Selected route pattern; empty if routing did not select one. |
 | `code` | Machine-readable diagnostic code, empty for ordinary success. |

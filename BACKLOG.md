@@ -23,6 +23,9 @@ The product reference is in `docs/`; this file tracks pending work.
 - Multi-source Unicode project paths are tracked in
   [Neri #37](https://github.com/hakumi-dev/neri/issues/37); ASCII paths with spaces
   are covered by CLI contracts.
+- `scripts/check-compatibility.sh` reports the selected installation and verifies
+  compilation or the complete Debug/Release behavior suite. The current contract
+  and tested toolchain identity are declared in `docs/COMPATIBILITY.md`.
 - Existing issue #1 remains open and describes the former `main.hk` sketch.
   Its implementation is now represented by the core and in-memory example;
   reconcile its acceptance and links before closing it on the board.
