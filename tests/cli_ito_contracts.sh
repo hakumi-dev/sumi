@@ -35,7 +35,7 @@ printf 'unknown=obsolete' > "$project/sumi.conf"
 printf 'PORT=1\n' > "$project/.env"
 printf 'PORT=2\n' > "$project/.env.development"
 cd "$project"
-start_server 'Sumi listening' "$cli" s --port "$SUMI_TEST_PORT"
+start_compiling_server 'Sumi listening' "$cli" s --port "$SUMI_TEST_PORT"
 request /; expect_status 200
 cmp "$SUMI_TEST_WORK/body" "$project/public/index.html"
 request /assets/site.css; expect_status 200

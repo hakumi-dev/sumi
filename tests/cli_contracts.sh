@@ -38,7 +38,7 @@ mv "$SUMI_TEST_WORK/config" "$project/sumi.conf"
 [[ -x "$project/build/application" ]]
 printf 'PORT=1\n' > "$project/.env"
 printf 'PORT=2\n' > "$project/.env.development"
-start_server 'Sumi listening' "$cli" s --project "$project" --port "$SUMI_TEST_PORT"
+start_compiling_server 'Sumi listening' "$cli" s --project "$project" --port "$SUMI_TEST_PORT"
 request /; expect_status 200
 grep -qF 'It all starts' "$SUMI_TEST_WORK/body"
 for asset in site.css site.js; do

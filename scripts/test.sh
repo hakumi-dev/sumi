@@ -3,6 +3,14 @@ set -euo pipefail
 
 SUMI_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SUMI_COMPILER="${NERI:-neri}"
+SUMI_MODES=("$@")
+if [[ ${#SUMI_MODES[@]} == 0 ]]; then SUMI_MODES=(debug release); fi
+for mode in "${SUMI_MODES[@]}"; do
+  case "$mode" in
+    debug|release) ;;
+    *) printf 'Usage: scripts/test.sh [debug|release ...]\n' >&2; exit 2 ;;
+  esac
+done
 source "$SUMI_ROOT/scripts/prerequisites.sh"
 require_test_prerequisites
 if ! command -v "$SUMI_COMPILER" >/dev/null 2>&1; then
@@ -13,12 +21,17 @@ SUMI_WORK="$(mktemp -d)"
 trap 'rm -rf -- "$SUMI_WORK"' EXIT
 
 bash "$SUMI_ROOT/tests/compatibility.sh"
-bash "$SUMI_ROOT/scripts/build-package.sh"
+if [[ "${SUMI_TEST_REUSE_PACKAGE:-0}" != 1 ]]; then
+  bash "$SUMI_ROOT/scripts/build-package.sh"
+fi
 IFS= read -r SUMI_PACKAGE_HOME < "$SUMI_ROOT/build/latest-package"
+if [[ "${SUMI_TEST_REUSE_PACKAGE:-0}" == 1 ]]; then
+  "$SUMI_PACKAGE_HOME/libexec/sumi-package" check "$SUMI_PACKAGE_HOME"
+fi
 export SUMI_PACKAGE_HOME
 cc -std=c11 -Wall -Wextra -Werror "$SUMI_ROOT/tests/http_methods.c" -o "$SUMI_WORK/http-methods"
 
-for mode in debug release; do
+for mode in "${SUMI_MODES[@]}"; do
   flags=()
   if [[ "$mode" == release ]]; then flags+=(--release); fi
   mkdir "$SUMI_WORK/$mode"

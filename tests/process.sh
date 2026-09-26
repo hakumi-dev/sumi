@@ -28,8 +28,17 @@ cleanup() { stop_server; rm -rf -- "$SUMI_TEST_WORK"; }
 trap cleanup EXIT
 fail() { printf 'Integration failure: %s\n' "$*" >&2; exit 1; }
 start_server() {
-  local ready="$1"
-  shift
+  start_server_with_budget 10 "$@"
+}
+# CLI server commands compile before listening; budget that work separately
+# from the default readiness deadline for already-built server fixtures.
+start_compiling_server() {
+  start_server_with_budget 120 "$@"
+}
+start_server_with_budget() {
+  local readiness_seconds="$1"
+  local ready="$2"
+  shift 2
   : > "$SUMI_TEST_WORK/server.log"
   # Bash job control creates a separate process group on both macOS and Linux.
   # Keep SIGINT enabled in the child, as for a foreground terminal command.
@@ -37,7 +46,7 @@ start_server() {
   "$@" > "$SUMI_TEST_WORK/server.log" 2>&1 &
   SUMI_TEST_PID=$!
   set +m
-  local deadline=$((SECONDS + 10))
+  local deadline=$((SECONDS + readiness_seconds))
   until grep -qF "$ready" "$SUMI_TEST_WORK/server.log"; do
     if ! kill -0 "$SUMI_TEST_PID" 2>/dev/null || (( SECONDS >= deadline )); then
       cat "$SUMI_TEST_WORK/server.log" >&2
