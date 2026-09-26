@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <locale.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -8,6 +9,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <util.h>
@@ -53,7 +55,14 @@ static void send_keys(const char *keys) {
     }
 }
 
-static void prompt(const char *expected) {
+static int64_t monotonic_milliseconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) fail("Cannot read monotonic clock");
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static void prompt_with_budget(const char *expected, int budget_ms) {
+    const int64_t deadline = monotonic_milliseconds() + budget_ms;
     /* '~' waits for displayed text and a quiet interval beyond the editor debounce. */
     int settled = driven && expected[0] == '~';
     int matched = 0;
@@ -61,13 +70,16 @@ static void prompt(const char *expected) {
     if (display_only) ++expected;
     size_t used = 0;
     transcript[0] = '\0';
-    for (int attempt = 0; attempt < 300; attempt++) {
+    for (;;) {
+        int64_t remaining = deadline - monotonic_milliseconds();
+        if (remaining <= 0) break;
+        int wait_ms = remaining < 100 ? (int)remaining : 100;
         struct pollfd ready = {terminal, POLLIN, 0};
-        int status = poll(&ready, 1, 100);
+        int status = poll(&ready, 1, wait_ms);
         if (status < 0 && errno == EINTR) continue;
         if (status < 0) fail("Cannot poll console terminal");
         if (!status) {
-            if (settled && matched) {
+            if (settled && matched && wait_ms == 100) {
                 fputs(transcript, stdout);
                 return;
             }
@@ -127,6 +139,10 @@ static void prompt(const char *expected) {
     fail("Console prompt timed out");
 }
 
+static void prompt(const char *expected) {
+    prompt_with_budget(expected, 30000);
+}
+
 /* Neri supplies test scenarios. This bridge only owns PTY I/O and synchronization.
    Input frames: little-endian uint32 length followed by bytes, bounded to 4096. */
 static int frame(char *output) {
@@ -143,17 +159,34 @@ int main(int argc, char **argv) {
     if (argc != 3 && argc != 4) return 2;
     driven = argc == 4 && strcmp(argv[3], "--drive") == 0;
     if (argc == 4 && !driven) return 2;
+    /* The child initializes LC_CTYPE from its environment for Unicode editing. */
+    const char *utf8_locale = NULL;
+    const char *candidates[] = {"C.UTF-8", "C.utf8", "en_US.UTF-8"};
+    for (size_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); index++) {
+        if (setlocale(LC_CTYPE, candidates[index]) != NULL) {
+            utf8_locale = candidates[index];
+            break;
+        }
+    }
+    if (utf8_locale == NULL) {
+        fputs("Console Unicode contracts require an available UTF-8 locale\n", stderr);
+        return 1;
+    }
     struct winsize size = {24, 100, 0, 0};
     child = forkpty(&terminal, NULL, NULL, &size);
     if (child < 0) return 1;
     if (child == 0) {
         setenv("TERM", "xterm-256color", 1);
-        setenv("LC_ALL", "en_US.UTF-8", 1);
+        if (setenv("LC_ALL", utf8_locale, 1) != 0) {
+            perror("Cannot configure console UTF-8 locale");
+            _exit(1);
+        }
         unsetenv("SUMI_CONSOLE_TIMINGS");
         execl(argv[1], argv[1], "c", "--project", argv[2], (char *)NULL);
         _exit(127);
     }
-    prompt("Sumi console");
+    /* The first prompt includes compilation; later prompts only budget interaction. */
+    prompt_with_budget("Sumi console", 120000);
     if (driven) {
         char keys[4097], expected[4097];
         while (frame(keys)) {
