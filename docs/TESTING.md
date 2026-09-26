@@ -66,3 +66,9 @@ by [Rails](https://guides.rubyonrails.org/testing.html#the-rails-test-runner),
 and [.NET's console test logger](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-test-vstest#examples).
 These are user-interface references, not a claim of compatibility with their
 test frameworks or command-line options.
+
+Binary package contracts require `/usr/bin/time` for process measurements
+(the `time` package on Debian and Ubuntu). The `package-contracts` unit accepts
+`--source-change <package> <existing-contract-work> <checkout>` to rerun only
+the source replacement, installation and rollback contract using an existing
+completed installation fixture.

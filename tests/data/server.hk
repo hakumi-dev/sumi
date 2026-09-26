@@ -67,7 +67,7 @@ def response(value: resources::Outcome<sumi::Response, result::Failure>): sumi::
   return sumi::text("scope failure", 500)
 end
 
-def serveWorker(work: String): resources::Outcome<Bool, result::Failure>
+def serveWorker(work: String): resources::Outcome<Bool, ProviderFailure>
   using session <- SQLiteSession.openWritable(work + "/data.sqlite")
     let provider = session.provider()
     let app = new sumi::App()
@@ -90,11 +90,27 @@ def serveWorker(work: String): resources::Outcome<Bool, result::Failure>
       match db.beginTransaction()
         case neri_data::WriteResult.Failure(error)
           match error
+            case WriteFailure.Provider(failure)
+              match failure
+                case ProviderFailure.Driver(error)
+                  match error.kind()
+                    case DriverErrorKind.Contention()
+                      return sumi::text("busy", 409)
+                    case DriverErrorKind.Constraint()
+                    case DriverErrorKind.Interrupted()
+                    case DriverErrorKind.ReadOnly()
+                    case DriverErrorKind.StorageFull()
+                    case DriverErrorKind.Io()
+                    case DriverErrorKind.Corrupt()
+                    case DriverErrorKind.Other()
+                  end
+                case ProviderFailure.State(message)
+                case ProviderFailure.Cleanup(error)
+              end
             case WriteFailure.Transaction(message)
-              return sumi::text("busy", 409)
             case WriteFailure.Concurrency(message)
             case WriteFailure.Constraint(message)
-            case WriteFailure.Provider(message)
+            case WriteFailure.Cleanup(failure)
             case WriteFailure.Unsupported(message)
             case WriteFailure.Validation(message)
           end
@@ -104,14 +120,17 @@ def serveWorker(work: String): resources::Outcome<Bool, result::Failure>
       end
       return sumi::text("expected writer lock", 500)
     end
-    let ran = try sumiweb::runWorker(app)
-
-    return ran
+    match sumiweb::runWorker(app)
+      case result::Result.Ok(ran)
+        return ran
+      case result::Result.Error(error)
+        return ProviderFailure.State(error.operation + ": " + error.code)
+    end
   end
   return false
 end
 
-def complete(value: resources::Outcome<Bool, result::Failure>): Void
+def complete(value: resources::Outcome<Bool, ProviderFailure>): Void
   test::assertEqual(value.closeFailures.count(), 0)
   match value.completion
     case resources::Completion.Value(success)
@@ -131,7 +150,7 @@ def workerEntry(config: Byte[]): Void
   end
 end
 
-def database(work: String, verify: Bool): resources::Outcome<Bool, result::Failure>
+def database(work: String, verify: Bool): resources::Outcome<Bool, ProviderFailure>
   let path = work + "/data.sqlite"
 
   using session <- SQLiteSession.createWritable(path)

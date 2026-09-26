@@ -95,7 +95,7 @@ class Run
   public elapsed: Int = 0
 end
 
-def run(options: process::SpawnOptions): Run
+def run(options: process::SpawnOptions, timeoutMs: Int = 60000): Run
   let started = now()
   let child = process::spawn(options).child()
 
@@ -105,7 +105,7 @@ def run(options: process::SpawnOptions): Run
   end
   let output = new Run()
 
-  while now() - started < 60000
+  while now() - started < timeoutMs
     let polled = child.wait(1)
     let text = host::stringFromBytes(polled.stdout)
     let error = host::stringFromBytes(polled.stderr)
@@ -138,7 +138,12 @@ def run(options: process::SpawnOptions): Run
   let cancelled = child.cancel()
   let disposed = child.dispose()
 
-  distribution::fail("Child timed out")
+  var invocation = options.executable
+
+  for argument in options.arguments
+    invocation = invocation + "\n  argument: " + argument
+  end
+  distribution::fail("Child timed out after " + (timeoutMs as String) + "ms: " + invocation + "\nstdout:\n" + output.text + "\nstderr:\n" + output.error)
   return output
 end
 
@@ -202,9 +207,81 @@ def toolchainResolution(package: String, work: String): Void
   assertTrue(bad.status != 0 && contains(diagnostic, "SUMI_CONSOLE_TOOLCHAIN"), "invalid reported runtime manifest rejected clearly: " + diagnostic)
 end
 
+def sourceChange(package: String, work: String, checkout: String): Void
+  let toolchain = new distribution::Toolchain()
+  let prefix = work + "/installed"
+  let neri = work + "/toolchain/bin/neri"
+  let app = work + "/app"
+  let cli = prefix + "/bin/sumi"
+  let consoleHash = distribution::digest(package + "/libexec/sumi-console")
+
+  let fixture = work + "/source-change-checkout-" + (now() as String)
+
+  distribution::operation(files::createDirectory(fixture))
+  # Derive checkout roots from the package's recorded build inputs.
+  # neri.json is generated from tooling/build-manifest.json by package build.
+  let inventory = distribution::textAt(package + "/SOURCE-MANIFEST.sha256")
+  var offset = 0
+
+  while offset < host::stringByteLength(inventory)
+    var lineEnd = offset
+
+    while lineEnd < host::stringByteLength(inventory) && host::stringByteAt(inventory, lineEnd) != (10 as Byte)
+      lineEnd = lineEnd + 1
+    end
+    assertTrue(lineEnd - offset > 66, "valid package source inventory")
+    var stop = offset + 66
+
+    while stop < lineEnd && host::stringByteAt(inventory, stop) != (47 as Byte)
+      stop = stop + 1
+    end
+    let name = host::stringSlice(inventory, offset + 66, stop - offset - 66)
+
+    if name != "neri.json" && !distribution::exists(fixture + "/" + name)
+      distribution::checked("cp", ["-R", checkout + "/" + name, fixture + "/" + name])
+    end
+    offset = lineEnd + 1
+  end
+  let source = fixture + "/console/main.hk"
+
+  distribution::write(source, replaceOnce(distribution::textAt(source), " · :help", " · :help [updated frontend]"))
+  let built = run(options(package + "/libexec/sumi-package", ["build", fixture], toolchain.command), 600000)
+
+  assertTrue(built.status == 0, "build changed Sumi frontend: " + built.text + built.error)
+  let newPackage = trimLine(distribution::textAt(fixture + "/build/latest-package"))
+  let unpack = fixture + "/unpacked"
+
+  distribution::operation(files::createDirectory(unpack))
+  distribution::checked("tar", ["-xzf", newPackage + ".tar.gz", "-C", unpack])
+  let id = distribution::digest(newPackage + "/ARTIFACTS.sha256")
+  let changedInstall = run(installConfig(unpack + "/" + id, prefix, neri))
+
+  assertTrue(changedInstall.status == 0, "install changed frontend without compiler")
+  let changedFrontend = session(cli, app, ":exit\n", neri, work + "/cache", "Sumi source update")
+
+  assertTrue(contains(changedFrontend.text, "[updated frontend]"), "new compiled Sumi source executes")
+  assertTrue(distribution::digest(newPackage + "/libexec/sumi-console") != consoleHash, "new frontend binary distributed")
+  let restored = run(installConfig(package, prefix, neri))
+
+  assertTrue(restored.status == 0, "rollback installs complete prior package")
+end
+
 def main(): Void
   let packageArg = host::argumentAt(0)
   let workArg = host::argumentAt(1)
+
+  if packageArg != null && packageArg == "--source-change"
+    let work = host::argumentAt(2)
+    let checkout = host::argumentAt(3)
+
+    if workArg == null || work == null || checkout == null
+      distribution::fail("Usage: package-contracts --source-change <package> <existing-contract-work> <checkout>")
+      return
+    end
+    sourceChange(distribution::absolute(workArg), distribution::absolute(work), distribution::absolute(checkout))
+    console::println("Sumi source change contract passed")
+    return
+  end
 
   if packageArg != null && packageArg == "--toolchain-resolution"
     let work = host::argumentAt(2)
@@ -381,34 +458,7 @@ def main(): Void
   let checkout = host::argumentAt(2)
 
   if checkout != null
-    let fixture = work + "/checkout"
-
-    distribution::operation(files::createDirectory(fixture))
-    for name in ["cli", "console", "src", "templates", "tooling", "package.json"]
-      distribution::checked("cp", ["-R", checkout + "/" + name, fixture + "/" + name])
-    end
-    let source = fixture + "/console/main.hk"
-
-    distribution::write(source, replaceOnce(distribution::textAt(source), " · :help", " · :help [updated frontend]"))
-    let built = run(options(package + "/libexec/sumi-package", ["build", fixture], toolchain.command))
-
-    assertTrue(built.status == 0, "build changed Sumi frontend: " + built.text + built.error)
-    let newPackage = trimLine(distribution::textAt(fixture + "/build/latest-package"))
-    let unpack = fixture + "/unpacked"
-
-    distribution::operation(files::createDirectory(unpack))
-    distribution::checked("tar", ["-xzf", newPackage + ".tar.gz", "-C", unpack])
-    let id = distribution::digest(newPackage + "/ARTIFACTS.sha256")
-    let changedInstall = run(installConfig(unpack + "/" + id, prefix, neri))
-
-    assertTrue(changedInstall.status == 0, "install changed frontend without compiler")
-    let changedFrontend = session(cli, app, ":exit\n", neri, work + "/cache", "Sumi source update")
-
-    assertTrue(contains(changedFrontend.text, "[updated frontend]"), "new compiled Sumi source executes")
-    assertTrue(distribution::digest(newPackage + "/libexec/sumi-console") != consoleHash, "new frontend binary distributed")
-    let restored = run(installConfig(package, prefix, neri))
-
-    assertTrue(restored.status == 0, "rollback installs complete prior package")
+    sourceChange(package, work, checkout)
   end
   console::println("Sumi binary package contracts passed; fixtures and measurements: " + work)
 end
