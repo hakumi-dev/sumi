@@ -3,6 +3,7 @@
 | Task | Reference |
 | --- | --- |
 | Install Sumi and inspect project layout | [Installation](GETTING-STARTED.md) |
+| Deploy an application executable | [Deployment](GETTING-STARTED.md#deployment) |
 | Run, test, build or open a console | [Commands](CLI.md) |
 | Write named tests and isolate test databases | [Testing](TESTING.md) |
 | Set ports, environments and asset paths | [Configuration](CONFIGURATION.md) |

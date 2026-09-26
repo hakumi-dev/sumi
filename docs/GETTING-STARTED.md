@@ -53,4 +53,29 @@ working directory from which those paths resolve:
 PORT=3000 ./build/application
 ```
 
+## Deployment
+
+Build with a fixed application source revision and matching Neri and Sumi
+packages on the target operating system, architecture and compatible system ABI.
+For an Ito application, commit `package.json` and `ito.lock`, restore dependencies
+with `ito install --locked`, then run `sumi build --release`.
+
+Deploy `build/application`, the configured static assets and runtime
+configuration. On Linux, inspect the built executable with
+`ldd build/application` and supply its required shared libraries in the runtime
+image. Direct execution needs those libraries, assets and configuration; it does
+not require the compiler, Ito, the Sumi CLI, source checkout or the rest of
+`build/`.
+
+Run from a directory where the configured relative asset paths resolve. Supply
+environment settings through the process or the documented dotenv files. Keep
+persistent database files and user data outside the replaceable application
+directory; their location is an application setting.
+
+A service supervisor should send SIGTERM and allow enough time for the
+application's [shutdown contract](HTTP.md), including its configured drain
+deadline. Forced termination ends the process without unwinding application
+resources. Build and release changes do not replace database migration or
+backup procedures owned by the application.
+
 [Routing contract](API.md) · [Configuration reference](CONFIGURATION.md)
