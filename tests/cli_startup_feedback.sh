@@ -2,12 +2,32 @@
 set -euo pipefail
 cli="$1"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export SUMI_HOME="${SUMI_PACKAGE_HOME:-$root}"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 unset SUMI_ENV PORT SUMI_PUBLIC
 export NERI_CACHE_DIR="$work/cache"
 export ITO_HOME="$work/ito"
 export TERM=xterm-256color
+cat > "$work/cache-capability.hk" <<'NERI'
+use console
+
+@cabiImport("neri_rt_v1_cache_supported")
+unsafe def cacheSupported(): Int
+end
+
+def main(): Void
+  unsafe
+    console::println(cacheSupported() as String)
+  end
+end
+NERI
+cache_supported="$("${NERI:-neri}" run "$work/cache-capability.hk")"
+case "$cache_supported" in
+  1) repeated_mode=warm; repeated_timing=incremental-hit ;;
+  0) repeated_mode=cold; repeated_timing=incremental-miss ;;
+  *) printf 'Unexpected runtime cache capability: %s\n' "$cache_supported" >&2; exit 1 ;;
+esac
 terminal_libs=()
 if [[ "$(uname -s)" == Linux ]]; then terminal_libs+=(-lutil); fi
 cc -std=c11 -Wall -Wextra -Werror "$root/tests/startup_terminal.c" \
@@ -35,11 +55,11 @@ end
 NERI
   # Finite applications exercise server dispatch without opening a port.
   "$work/terminal" "$cli" "$work/$project" cold > "$work/$project-cold"
-  "$work/terminal" "$cli" "$work/$project" warm > "$work/$project-warm"
+  "$work/terminal" "$cli" "$work/$project" "$repeated_mode" > "$work/$project-warm"
   "$cli" s --project "$work/$project" --timings > "$work/timings" 2>&1
-  grep -q 'incremental-hit' "$work/timings"
-  printf '%s cached startup: ' "$project"
-  grep 'neri timing incremental-hit' "$work/timings"
+  grep -q "neri timing $repeated_timing " "$work/timings"
+  printf '%s repeated startup: ' "$project"
+  grep "neri timing $repeated_timing " "$work/timings"
   "$cli" s --project "$work/$project" > "$work/redirected" 2>&1
   [[ "$(cat "$work/redirected")" == STARTUP_READY ]]
   # A changed source invalidates the executable receipt. Unchanged library

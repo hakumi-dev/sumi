@@ -28,8 +28,9 @@ corresponding Neri package is incomplete; install the package before starting
 the console.
 
 Interactive console startup reports project loading, source counts, compilation
-phases, and native module cache reuse on one temporary line. The object cache
-reuses unchanged native code, including modules with shared native libraries.
+phases, and native module cache reuse on one temporary line. Where supported,
+the object cache reuses unchanged native code, including modules with shared
+native libraries.
 Each new console process still analyzes the application's source and types.
 
 ## Building and testing Sumi
@@ -56,3 +57,9 @@ resolves the project. Both commands show real compilation phases and native
 function progress, clear the line before application output or diagnostics, and
 keep redirected output free of startup UI. A server cache hit reuses the Neri
 executable receipt; it does not reuse a console JIT module.
+
+Executable receipts and the native object cache currently require macOS ARM64.
+Linux supports dependency semantic/native snapshots and secure file metadata,
+but recompiles and links the application on repeated startup. The startup
+contracts query the runtime cache capability and verify the corresponding
+reuse or recompilation behavior. Linux end-to-end validation remains pending.
