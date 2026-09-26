@@ -93,7 +93,8 @@ def runConsoleScenario(options: process::SpawnOptions): result::Result<process::
     return result::Result<process::PollResult, result::Failure>.Error(new result::Failure("spawn_failed", "console-ui"))
   end
   var output = child.wait(30000)
-  var remaining = 3
+  # Total: startup 120 s + reset 120 s + interactions and shutdown 60 s.
+  var remaining = 9
 
   while output.running && output.failure == null && remaining > 0
     output = child.wait(30000)
@@ -150,7 +151,7 @@ def exercise(cli: String, project: String, driver: String, terminal: Bool, noCol
       "let scrollOne = 1\n", "scrollOne: Int", "let scrollTwo = 2\n", "scrollTwo: Int", "let scrollThree = 3\n", "scrollThree: Int", "let scrollFour = 4\n", "scrollFour: Int", "let scrollFive = 5\n", "scrollFive: Int",
       "scroll", "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", "\t", "@sumi> scroll", "\n", "=> ",
       "let failedCompletion = missingCompletionName\n", "missingCompletionName", "failedCompl\t\n", "Undefined name 'failedCompl'",
-      ":re\t\n", "App reinitialized", "uniqueN\t\n", "Undefined name 'uniqueN'", "meter\t\n", "Undefined name 'meter'", ":ex\t\n", ""]
+      ":re\t\n", "!App reinitialized", "uniqueN\t\n", "Undefined name 'uniqueN'", "meter\t\n", "Undefined name 'meter'", ":ex\t\n", ""]
       frame(input, text)
     end
   else

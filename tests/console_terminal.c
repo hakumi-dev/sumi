@@ -140,11 +140,15 @@ static void prompt_with_budget(const char *expected, int budget_ms) {
 }
 
 static void prompt(const char *expected) {
-    prompt_with_budget(expected, 30000);
+    /* Scenarios mark compilation explicitly; ordinary interaction stays bounded. */
+    int compilation = driven && expected[0] == '!';
+    prompt_with_budget(expected + compilation, compilation ? 120000 : 30000);
 }
 
 /* Neri supplies test scenarios. This bridge only owns PTY I/O and synchronization.
-   Input frames: little-endian uint32 length followed by bytes, bounded to 4096. */
+   Input frames: little-endian uint32 length followed by bytes, bounded to 4096.
+   Expected prefixes: '!' compilation budget, '@' display only, '~' settled display.
+   A compilation prefix may precede a display prefix. */
 static int frame(char *output) {
     unsigned char length[4];
     if (fread(length, 1, 4, stdin) != 4) return 0;
@@ -185,7 +189,7 @@ int main(int argc, char **argv) {
         execl(argv[1], argv[1], "c", "--project", argv[2], (char *)NULL);
         _exit(127);
     }
-    /* The first prompt includes compilation; later prompts only budget interaction. */
+    /* Startup includes compilation; scenarios mark any later compilation explicitly. */
     prompt_with_budget("Sumi console", 120000);
     if (driven) {
         char keys[4097], expected[4097];
