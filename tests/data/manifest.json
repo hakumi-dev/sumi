@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "defaultUnit": "server",
+  "units": {
+    "barrier": {
+      "kind": "library",
+      "sources": ["barrier.hk"]
+    },
+    "server": {
+      "kind": "executable",
+      "sources": ["server.hk", "transaction.hk"],
+      "references": [
+        "barrier",
+        {"project": "../../neri.json", "unit": "http"},
+        {"project": "../../../neri/experiments/neri-data/concurrency-tokens/manifest.json", "unit": "data"},
+        {"project": "../../../neri/experiments/neri-data/providers/sqlite/manifest.json", "unit": "sqlite"}
+      ]
+    },
+    "driver": {
+      "kind": "executable",
+      "sources": ["driver.hk"],
+      "references": ["barrier"]
+    }
+  }
+}

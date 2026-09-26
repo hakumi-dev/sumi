@@ -2,11 +2,13 @@ use sumi
 use example
 use test
 use console
+use result
+use text
 
 class Observation
   public calls: Int = 0
   public log: String = ""
-  public saved: (fn(Request): Response)?
+  public saved: (fn(sumi::Request): sumi::Response)?
 end
 
 class ExpectedResponse
@@ -21,17 +23,20 @@ class ExpectedResponse
   end
 end
 
-def expectResponse(response: Response, status: Int, body: String): Void
-  if response.status != status || response.body != body
-    console.println("Expected " + (status as String) + ": " + body)
-    console.println("Received " + (response.status as String) + ": " + response.body)
+def expectResponse(response: sumi::Response, status: Int, body: String): Void
+  test::assertEqual(response.status, status)
+  match response.text()
+    case result::Result.Ok(decoded)
+      test::assertEqual(decoded, body)
+    case result::Result.Error(failure)
+      console::println(failure.message)
+
+      test::assertTrue(false)
   end
-  test.assertEqual(response.status, status)
-  test.assertEqual(response.body, body)
 end
 
 def ready(app: App): Void
-  test.assertTrue(app.prepare() == null)
+  test::assertTrue(app.prepare() == null)
 end
 
 def exampleContract(): Void
@@ -40,6 +45,7 @@ def exampleContract(): Void
     observation.calls = observation.calls + 1
     observation.log = message
   end
+
   ready(app)
   let cases = [
     new ExpectedResponse("/", 200, "Hello, Sumi!"),
@@ -54,215 +60,370 @@ def exampleContract(): Void
     new ExpectedResponse("/square/-1001", 400, "Expected an integer between -1000 and 1000"),
     new ExpectedResponse("/missing", 404, "Not Found")
   ]
+
   for expected in cases
-    expectResponse(app.handle(new Request("GET", expected.path)), expected.status, expected.body)
-    test.assertEqual(observation.log, expected.path + " -> " + (expected.status as String))
+    expectResponse(app.handle(new sumi::Request("GET", expected.path)), expected.status, expected.body)
+
+    test::assertEqual(observation.log, expected.path + " -> " + (expected.status as String))
   end
-  test.assertEqual(observation.calls, cases.Length)
+
+  test::assertEqual(observation.calls, cases.Length)
 end
 
 def routingContract(): Void
   # Check precedence in both registration orders.
   for reverse in [false, true]
     let app = new App()
+
     if reverse
       app.get("/users/new") do |request|
-        return text("literal")
+        return sumi::text("literal")
       end
       app.get("/:section/new") do |request|
-        return text("section")
+        return sumi::text("section")
       end
     end
     app.get("/users/:id") do |request|
       let id = request.param("id")
+
       if id == null
-        return text("missing", 500)
+        return sumi::text("missing", 500)
       end
-      return text(id)
+      return sumi::text(id)
     end
     if !reverse
       app.get("/:section/new") do |request|
-        return text("section")
+        return sumi::text("section")
       end
       app.get("/users/new") do |request|
-        return text("literal")
+        return sumi::text("literal")
       end
     end
     ready(app)
-    expectResponse(app.handle(new Request("GET", "/users/new")), 200, "literal")
-    expectResponse(app.handle(new Request("GET", "/users/42")), 200, "42")
-    expectResponse(app.handle(new Request("GET", "/posts/new")), 200, "section")
+    expectResponse(app.handle(new sumi::Request("GET", "/users/new")), 200, "literal")
+    expectResponse(app.handle(new sumi::Request("GET", "/users/42")), 200, "42")
+    expectResponse(app.handle(new sumi::Request("GET", "/posts/new")), 200, "section")
   end
 
   let app = new App()
+
   app.get("/:section/new") do |request|
-    return text("section")
+    return sumi::text("section")
   end
   app.get("/users/:id") do |request|
-    return text("user")
+    return sumi::text("user")
   end
   app.get("/teams/:team_id/users/:user") do |request|
     let team = request.param("team_id")
     let user = request.param("user")
+
     if team == null || user == null
-      return text("missing", 500)
+      return sumi::text("missing", 500)
     end
-    return text(team + ":" + user)
+    return sumi::text(team + ":" + user)
   end
   ready(app)
-  expectResponse(app.handle(new Request("GET", "/users/new")), 200, "user")
-  expectResponse(app.handle(new Request("GET", "/teams/core/users/Ada%2FLovelace")), 200, "core:Ada%2FLovelace")
+  expectResponse(app.handle(new sumi::Request("GET", "/users/new")), 200, "user")
+  expectResponse(app.handle(new sumi::Request("GET", "/teams/core/users/Ada%2FLovelace")), 200, "core:Ada%2FLovelace")
   for path in ["", "users/42", "/users/", "/users//42", "/users/42/", "/users/42/extra", "/users/42?q=1", "/users/42#part"]
-    expectResponse(app.handle(new Request("GET", path)), 404, "Not Found")
+    expectResponse(app.handle(new sumi::Request("GET", path)), 404, "Not Found")
   end
-  expectResponse(app.handle(new Request("POST", "/users/42")), 404, "Not Found")
+  expectResponse(app.handle(new sumi::Request("POST", "/users/42")), 405, "Method Not Allowed")
 end
 
 def configurationContract(): Void
   for pattern in ["relative", "/bad/", "/bad//path", "/:name/:name", "/:", "/:1name", "/:bad-name", "/path?query", "/path#fragment"]
     let app = new App()
+
     app.get(pattern) do |request|
-      return text("unreachable")
+      return sumi::text("unreachable")
     end
     let error = app.prepare()
-    test.assertTrue(error != null)
+
+    test::assertTrue(error != null)
     if error != null
-      test.assertEqual(error.message, "Invalid GET pattern: " + pattern)
+      test::assertEqual(error.message, "Invalid GET pattern: " + pattern)
     end
-    let rejected = app.handle(new Request("GET", "/"))
+    let rejected = app.handle(new sumi::Request("GET", "/"))
+
     expectResponse(rejected, 500, "Internal Server Error")
-    test.assertEqual(rejected.diagnosticCode, "SUMI_ROUTE_PATTERN")
-    test.assertEqual(rejected.diagnosticMessage, "Invalid GET pattern: " + pattern)
+
+    test::assertEqual(rejected.diagnosticCode, "SUMI_ROUTE_PATTERN")
+    test::assertEqual(rejected.diagnosticMessage, "Invalid GET pattern: " + pattern)
   end
   for pattern in ["/same", "/:name"]
     let app = new App()
+
     app.get(pattern) do |request|
-      return text("first")
+      return sumi::text("first")
     end
     let duplicate = pattern == "/same" ? "/same" : "/:other"
+
     app.get(duplicate) do |request|
-      return text("second")
+      return sumi::text("second")
     end
     # A later valid registration must not clear the configuration error.
     app.get("/valid") do |request|
-      return text("valid")
+      return sumi::text("valid")
     end
     let error = app.prepare()
-    test.assertTrue(error != null)
+
+    test::assertTrue(error != null)
     if error != null
-      test.assertEqual(error.message, "Duplicate GET pattern: " + duplicate)
+      test::assertEqual(error.message, "Duplicate GET pattern: " + duplicate)
     end
   end
   let app = new App()
-  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+
+  expectResponse(app.handle(new sumi::Request("GET", "/")), 500, "Internal Server Error")
   ready(app)
   ready(app)
-  expectResponse(app.handle(new Request("GET", "/")), 404, "Not Found")
+  expectResponse(app.handle(new sumi::Request("GET", "/")), 404, "Not Found")
   app.around() do |request, next|
     return next(request)
   end
-  test.assertTrue(app.prepare() != null)
-  expectResponse(app.handle(new Request("GET", "/")), 500, "Internal Server Error")
+
+  test::assertTrue(app.prepare() != null)
+  expectResponse(app.handle(new sumi::Request("GET", "/")), 500, "Internal Server Error")
 end
 
 def middlewareContract(): Void
   let observation = new Observation()
   let app = new App()
+
   app.around() do |request, next|
     observation.log = observation.log + "outer>"
     let response = next(request)
+
     observation.log = observation.log + "<outer"
-    test.assertTrue(request.param("name") == null)
-    test.assertEqual(request.path, "/hello/Ada")
+
+    test::assertTrue(request.param("name") == null)
+    test::assertEqual(request.path, "/hello/Ada")
     return response
   end
   app.around() do |request, next|
     observation.log = observation.log + "inner>"
     let response = next(request)
+
     observation.log = observation.log + "<inner"
     return response
   end
   app.get("/hello/:name") do |request|
     observation.log = observation.log + "handler"
     let name = request.param("name")
-    test.assertTrue(name != null)
+
+    test::assertTrue(name != null)
     request.path = "/changed"
     if name != null
-      return text(name)
+      return sumi::text(name)
     end
-    return text("missing", 500)
+    return sumi::text("missing", 500)
   end
   ready(app)
-  let incoming = new Request("GET", "/hello/Ada")
+  let incoming = new sumi::Request("GET", "/hello/Ada")
+
   expectResponse(app.handle(incoming), 200, "Ada")
-  test.assertEqual(observation.log, "outer>inner>handler<inner<outer")
-  test.assertEqual(incoming.path, "/hello/Ada")
-  test.assertTrue(incoming.param("name") == null)
+
+  test::assertEqual(observation.log, "outer>inner>handler<inner<outer")
+  test::assertEqual(incoming.path, "/hello/Ada")
+  test::assertTrue(incoming.param("name") == null)
 
   let stopped = new App()
+
   stopped.around() do |request, next|
-    return text("Stopped", 403)
+    return sumi::text("Stopped", 403)
   end
   stopped.get("/") do |request|
     observation.calls = observation.calls + 1
-    return text("unreachable")
+    return sumi::text("unreachable")
   end
   ready(stopped)
-  expectResponse(stopped.handle(new Request("GET", "/")), 403, "Stopped")
-  test.assertEqual(observation.calls, 0)
+  expectResponse(stopped.handle(new sumi::Request("GET", "/")), 403, "Stopped")
+
+  test::assertEqual(observation.calls, 0)
 end
 
 def continuationContract(): Void
   let observation = new Observation()
   let app = new App()
+
   app.around() do |request, next|
     observation.saved = next
     let first = next(request)
+
     next(request)
     return first
   end
   app.get("/") do |request|
     observation.calls = observation.calls + 1
-    return text("once")
+    return sumi::text("once")
   end
   ready(app)
-  let repeated = app.handle(new Request("GET", "/"))
+  let repeated = app.handle(new sumi::Request("GET", "/"))
+
   expectResponse(repeated, 500, "Internal Server Error")
-  test.assertEqual(repeated.diagnosticCode, "SUMI_NEXT_REPEATED")
-  test.assertEqual(observation.calls, 1)
+
+  test::assertEqual(repeated.diagnosticCode, "SUMI_NEXT_REPEATED")
+  test::assertEqual(observation.calls, 1)
 
   # An unused continuation also expires when its middleware returns.
   let stopped = new App()
+
   stopped.around() do |request, next|
     observation.saved = next
-    return text("Stopped", 403)
+    return sumi::text("Stopped", 403)
   end
   stopped.get("/") do |request|
     observation.calls = observation.calls + 1
-    return text("unreachable")
+    return sumi::text("unreachable")
   end
   ready(stopped)
-  expectResponse(stopped.handle(new Request("GET", "/")), 403, "Stopped")
+  expectResponse(stopped.handle(new sumi::Request("GET", "/")), 403, "Stopped")
   let saved = observation.saved
-  test.assertTrue(saved != null)
+
+  test::assertTrue(saved != null)
   if saved != null
-    let expired = saved(new Request("GET", "/"))
+    let expired = saved(new sumi::Request("GET", "/"))
+
     expectResponse(expired, 500, "Internal Server Error")
-    test.assertEqual(expired.diagnosticCode, "SUMI_NEXT_EXPIRED")
+
+    test::assertEqual(expired.diagnosticCode, "SUMI_NEXT_EXPIRED")
   end
-  test.assertEqual(observation.calls, 1)
+
+  test::assertEqual(observation.calls, 1)
+end
+
+def methodContract(): Void
+  let app = new App()
+
+  app.get("/items/:id") do |request|
+    return sumi::text("get")
+  end
+  app.head("/items/:id") do |request|
+    return sumi::text("head")
+  end
+  app.post("/items/:id") do |request|
+    match request.text()
+      case result::Result.Ok(body)
+        return sumi::text("post:" + body)
+      case result::Result.Error(failure)
+        return sumi::text(failure.message, 415)
+    end
+  end
+  app.put("/items/:id") do |request|
+    return sumi::text("put")
+  end
+  app.patch("/items/:id") do |request|
+    return sumi::text("patch")
+  end
+  app.delete("/items/:id") do |request|
+    return sumi::text("delete")
+  end
+  app.options("/items/:id") do |request|
+    return sumi::text("options")
+  end
+  app.get("/only-get") do |request|
+    return sumi::text("fallback")
+  end
+  ready(app)
+  for method in ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    test::assertEqual(app.handle(new sumi::Request(method, "/items/42")).status, 200)
+  end
+  expectResponse(app.handle(new sumi::Request("HEAD", "/items/42")), 200, "head")
+  expectResponse(app.handle(new sumi::Request("HEAD", "/only-get")), 200, "fallback")
+  let post = new sumi::Request("POST", "/items/42")
+
+  post.body = text::bytes("payload")
+  expectResponse(app.handle(post), 200, "post:payload")
+  let denied = app.handle(new sumi::Request("PATCH", "/only-get"))
+
+  test::assertEqual(denied.status, 405)
+  test::assertEqual(denied.allowedMethods.Length, 3)
+  test::assertEqual(denied.allowedMethods[0], "GET")
+  test::assertEqual(denied.allowedMethods[1], "HEAD")
+  test::assertEqual(denied.allowedMethods[2], "OPTIONS")
+  test::assertEqual(app.handle(new sumi::Request("OPTIONS", "/only-get")).status, 204)
+  test::assertEqual(app.handle(new sumi::Request("POST", "/missing")).status, 404)
+  let duplicate = new App()
+
+  duplicate.post("/items/:id") do |request|
+    return sumi::text("")
+  end
+  duplicate.post("/items/:name") do |request|
+    return sumi::text("")
+  end
+  let error = duplicate.prepare()
+
+  test::assertTrue(error != null)
+  if error != null
+    test::assertEqual(error.code, "SUMI_ROUTE_DUPLICATE")
+    test::assertEqual(error.message, "Duplicate POST pattern: /items/:name")
+  end
+end
+
+def bodyContract(): Void
+  let request = new sumi::Request("POST", "/bytes")
+
+  request.body = [0 as Byte, 65 as Byte]
+  match request.text()
+    case result::Result.Ok(decoded)
+      let bytes = text::bytes(decoded)
+
+      test::assertEqual(bytes.Length, 2)
+      test::assertEqual(bytes[0], 0 as Byte)
+      test::assertEqual(bytes[1], 65 as Byte)
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+  end
+  request.body = [255 as Byte]
+  match request.text()
+    case result::Result.Ok(decoded)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, "invalid_utf8")
+  end
+  let response = sumi::binary([0 as Byte, 255 as Byte])
+
+  test::assertEqual(response.contentType, "application/octet-stream")
+  test::assertEqual(response.body.Length, 2)
+  test::assertEqual(response.body[1], 255 as Byte)
+  test::assertTrue(!response.headers.add("X-Unsafe", "one\r\nInjected: yes"))
+  test::assertTrue(response.headers.add("Set-Cookie", "one=1"))
+  test::assertTrue(response.headers.add("Set-Cookie", "two=2"))
+  test::assertEqual(response.headers.values("set-cookie").Length, 2)
+  let unicode = sumi::text("水")
+
+  test::assertEqual(unicode.body.Length, 3)
+  let app = new App()
+
+  app.post("/bytes") do |incoming|
+    incoming.body[0] = 66 as Byte
+    incoming.headers.add("X-Mutated", "yes")
+    return sumi::binary(incoming.body)
+  end
+  ready(app)
+  request.body = [65 as Byte]
+  request.headers.add("X-Original", "yes")
+  let changed = app.handle(request)
+
+  test::assertEqual(changed.body[0], 66 as Byte)
+  test::assertEqual(request.body[0], 65 as Byte)
+  test::assertEqual(request.headers.count(), 1)
+  test::assertEqual(request.headers.values("x-mutated").Length, 0)
 end
 
 def main(): Void
-  console.println("Example contracts")
+  console::println("Example contracts")
   exampleContract()
-  console.println("Routing contracts")
+  console::println("Routing contracts")
   routingContract()
-  console.println("Configuration contracts")
+  methodContract()
+  bodyContract()
+  console::println("Configuration contracts")
   configurationContract()
-  console.println("Middleware contracts")
+  console::println("Middleware contracts")
   middlewareContract()
-  console.println("Continuation contracts")
+  console::println("Continuation contracts")
   continuationContract()
-  console.println("Sumi contracts passed")
+  console::println("Sumi contracts passed")
 end

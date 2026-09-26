@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "defaultUnit": "build",
+  "units": {
+    "progress": {
+      "kind": "library",
+      "sources": ["progress.hk"]
+    },
+    "build": {
+      "kind": "executable",
+      "sources": ["main.hk"],
+      "references": ["progress", {"project": "../build/console/runtime/share/neri/manifest.json", "unit": "compiler-core"}]
+    }
+  }
+}

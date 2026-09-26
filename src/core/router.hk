@@ -1,6 +1,8 @@
+use host
 namespace sumi
 
 internal class Route
+  public method: String = "GET"
   public path: String = ""
   public pattern: PathSegment?
   public handler: fn(Request): Response
@@ -16,36 +18,37 @@ end
 internal class Router
   private routes: Route?
 
-  def add(path: String, handler: fn(Request): Response): ConfigurationError?
+  def add(method: String, path: String, handler: fn(Request): Response): ConfigurationError?
+    if !supportedMethod(method)
+      return new ConfigurationError("Unsupported route method: " + method, "SUMI_ROUTE_METHOD")
+    end
     let parsed = parsePath(path)
+
     if !parsed.valid || !validParameters(parsed.first)
-      return new ConfigurationError("Invalid GET pattern: " + path, "SUMI_ROUTE_PATTERN")
+      return new ConfigurationError("Invalid " + method + " pattern: " + path, "SUMI_ROUTE_PATTERN")
     end
     var route = this.routes
+
     while route != null
-      if equivalentPatterns(route.pattern, parsed.first)
-        return new ConfigurationError("Duplicate GET pattern: " + path, "SUMI_ROUTE_DUPLICATE")
+      if route.method == method && equivalentPatterns(route.pattern, parsed.first)
+        return new ConfigurationError("Duplicate " + method + " pattern: " + path, "SUMI_ROUTE_DUPLICATE")
       end
       route = route.next
     end
     let added = new Route(parsed.first, handler, this.routes)
+
+    added.method = method
     added.path = path
     this.routes = added
     return null
   end
 
-  def dispatch(request: Request): Response
-    if request.method != "GET"
-      return text("Not Found", 404)
-    end
-    let path = parsePath(request.path)
-    if !path.valid
-      return text("Not Found", 404)
-    end
+  private def select(method: String, path: PathSegment?): Route?
     var selected: Route? = null
     var route = this.routes
+
     while route != null
-      if matchesPath(route.pattern, path.first)
+      if route.method == method && matchesPath(route.pattern, path)
         if selected == null
           selected = route
         else if moreSpecific(route.pattern, selected.pattern)
@@ -54,11 +57,51 @@ internal class Router
       end
       route = route.next
     end
-    if selected == null
+    return selected
+  end
+
+  def dispatch(request: Request): Response
+    let path = parsePath(request.path)
+
+    if !path.valid
       return text("Not Found", 404)
     end
+    var allowed: String[] = []
+
+    for method in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+      var found = this.select(method, path.first) != null
+
+      if method == "HEAD" && this.select("GET", path.first) != null
+        found = true
+      end
+      if found
+        allowed = host::appendString(allowed, method)
+      end
+    end
+    if allowed.Length == 0
+      return text("Not Found", 404)
+    end
+    if this.select("OPTIONS", path.first) == null
+      allowed = host::appendString(allowed, "OPTIONS")
+    end
+    var selected = this.select(request.method, path.first)
+
+    if selected == null && request.method == "HEAD"
+      selected = this.select("GET", path.first)
+    end
+    if selected == null
+      let response = request.method == "OPTIONS" ? text("", 204) : text("Method Not Allowed", 405)
+
+      response.allowedMethods = allowed
+      return response
+    end
     let response = selected.handler(request.matched(selected.pattern, path.first))
+
     response.route = selected.path
     return response
   end
+end
+
+def supportedMethod(method: String): Bool
+  return method == "GET" || method == "HEAD" || method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE" || method == "OPTIONS"
 end

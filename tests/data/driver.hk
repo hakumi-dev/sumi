@@ -1,0 +1,163 @@
+use host
+use workers
+use resources
+use result
+use text
+use test
+use httpclient
+use clock
+
+def fetch(port: Int, path: String, status: Int, body: String): Void
+  match httpclient::get(port, path)
+    case result::Result.Ok(reply)
+      test::assertEqual(reply.status, status)
+      test::assertTrue(reply.text() == body)
+    case result::Result.Error(error)
+      test::assertTrue(false)
+  end
+end
+
+def client(config: Byte[]): Void
+  let portText = host::stringFromBytes(config)
+
+  test::assertTrue(portText != null)
+  if portText == null
+    return
+  end
+  let port = host::parseInt(portText)
+
+  test::assertTrue(port != null)
+  if port == null
+    return
+  end
+  match workers::ready()
+    case result::Result.Ok(value)
+    case result::Result.Error(error)
+      test::assertTrue(false)
+      return
+  end
+  while true
+    match workers::receive()
+      case result::Result.Ok(input)
+        if input == null
+          return
+        end
+        let path = host::stringFromBytes(input)
+
+        test::assertTrue(path != null)
+        if path == null
+          return
+        end
+        match httpclient::get(port, path)
+          case result::Result.Ok(reply)
+            test::assertEqual(reply.status, 200)
+            match workers::reply(reply.body)
+              case result::Result.Ok(value)
+              case result::Result.Error(error)
+                test::assertTrue(false)
+            end
+          case result::Result.Error(error)
+            test::assertTrue(false)
+        end
+      case result::Result.Error(error)
+        test::assertTrue(false)
+        return
+    end
+  end
+end
+
+def run(work: String, port: Int): resources::Outcome<Bool, result::Failure>
+  let options = new workers::Options()
+
+  options.workers = 2
+  options.maxOutstanding = 8
+  using pool <- workers::start(client, text::bytes(port as String), options)
+    var phase = 0
+
+    while phase < 3
+      let expected = phase == 0 ? "committed" : (phase == 1 ? "committed:2" : "rolled-back")
+      let path = phase == 0 ? "/hold" : (phase == 1 ? "/read" : "/drain")
+      let count = phase == 1 ? 8 : 1
+      var submitted = 0
+
+      while submitted < count
+        let ticket = try pool.submit(text::bytes(path))
+
+        submitted = submitted + 1
+      end
+      if phase == 0
+        test::assertTrue(waitMarker(work + "/committed-entered"))
+        fetch(port, "/read", 200, "initial:1")
+        fetch(port, "/busy", 409, "busy")
+
+        test::assertTrue(host::writeText(work + "/committed-release", "ready"))
+      else if phase == 2
+        test::assertTrue(waitMarker(work + "/drain-entered"))
+        test::assertTrue(host::writeText(work + "/signal-ready", "ready"))
+      end
+      let started = clock::milliseconds()
+
+      test::assertTrue(started != null)
+      if started == null
+        return false
+      end
+      var received = 0
+
+      while received < count
+        let now = clock::milliseconds()
+
+        if now == null || now - started >= 5000
+          return false
+        end
+        match try pool.poll(25)
+          case workers::Poll.Empty()
+          case workers::Poll.Stopped()
+            return false
+          case workers::Poll.Completed(value)
+            match value.outcome
+              case workers::Outcome.Success(bytes)
+                test::assertTrue(host::stringFromBytes(bytes) == expected)
+                received = received + 1
+              case workers::Outcome.Failed()
+                return false
+              case workers::Outcome.Cancelled()
+                return false
+            end
+        end
+      end
+      if phase == 0
+        fetch(port, "/read", 200, "committed:2")
+        fetch(port, "/rollback", 200, "rolled-back")
+        fetch(port, "/read", 200, "committed:2")
+      end
+      phase = phase + 1
+    end
+    return true
+  end
+  return false
+end
+
+def main(): Void
+  let work = host::environment("SUMI_TEST_WORK")
+  let portText = host::environment("PORT")
+
+  test::assertTrue(work != null && portText != null)
+  if work == null || portText == null
+    return
+  end
+  let port = host::parseInt(portText)
+
+  test::assertTrue(port != null)
+  if port == null
+    return
+  end
+  let outcome = run(work, port)
+
+  test::assertEqual(outcome.closeFailures.count(), 0)
+  match outcome.completion
+    case resources::Completion.Value(value)
+      test::assertTrue(value)
+    case resources::Completion.Failure(error)
+      test::assertTrue(false)
+  end
+end

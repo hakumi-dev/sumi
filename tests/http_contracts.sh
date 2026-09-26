@@ -6,10 +6,17 @@ site="$1"
 fixture="$2"
 cd "$SUMI_TEST_ROOT"
 export PORT="$SUMI_TEST_PORT" SUMI_PUBLIC="$SUMI_TEST_ROOT/examples/web/public"
+export SUMI_BINARY="$SUMI_TEST_WORK/static.bin"
+printf '\000\377\303\050\101' > "$SUMI_BINARY"
 start_server 'Sumi listening' "$site"
+previous_id=""
 while IFS='|' read -r url filename mime; do
   request "$url"
   expect_status 200
+  id="$(header X-Request-Id)"
+  [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || fail 'request ID is not UUID v4'
+  [[ "$id" != "$previous_id" ]] || fail 'request ID reused'
+  previous_id="$id"
   [[ "$(header Content-Type)" == "$mime" ]] || fail 'incorrect media type'
   cmp "$SUMI_TEST_WORK/body" "$SUMI_PUBLIC/$filename"
   [[ "$(header Content-Length)" == "$(wc -c < "$SUMI_TEST_WORK/body" | tr -d ' ')" ]] || fail 'incorrect byte length'
@@ -22,12 +29,19 @@ CASES
 for path in /missing /../README.md /%2e%2e/README.md /assets/ /assets/site.css/; do
   request "$path"; expect_status 404
 done
-request / --head; expect_status 405
-[[ "$(header Allow)" == GET ]] || fail 'incorrect Allow'
+request '/missing?token=SECRET' -H 'X-Request-Id: supplied-by-client'; expect_status 404
+id="$(header X-Request-Id)"
+[[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || fail 'external request ID was trusted'
+deadline=$((SECONDS + 2))
+until grep -F "request_id=\"$id\"" "$SUMI_TEST_WORK/server.log" | grep -qF 'path="/missing"'; do
+  (( SECONDS < deadline )) || fail '404 requested path missing from logs'
+  sleep 0.01
+done
+request / --head; expect_status 200
 request / -X POST; expect_status 405
+[[ "$(header Allow)" == 'GET, HEAD, OPTIONS' ]] || fail 'incorrect Allow'
 if timeout 5 "$site" > "$SUMI_TEST_WORK/failure" 2>&1; then fail 'occupied port accepted'; fi
-grep -qF 'Cannot bind listener' "$SUMI_TEST_WORK/failure"
-grep -qF "$PORT" "$SUMI_TEST_WORK/failure"
+grep -qF 'listen.bind' "$SUMI_TEST_WORK/failure"
 ! grep -qF SECRET "$SUMI_TEST_WORK/server.log"
 stop_server
 start_server READY "$fixture"
@@ -66,7 +80,12 @@ for status in 204 205 304; do
   fi
 done
 for status in 199 600; do request "/status/$status"; expect_status 500; done
+"$3" "$SUMI_TEST_PORT"
 stop_server
+dd if=/dev/zero of="$SUMI_TEST_WORK/oversized.bin" bs=1048577 count=1 2>/dev/null
+if SUMI_BINARY="$SUMI_TEST_WORK/oversized.bin" timeout 5 "$fixture" > "$SUMI_TEST_WORK/failure" 2>&1; then fail 'oversized static file accepted'; fi
+grep -qF SUMI_STATIC_SIZE "$SUMI_TEST_WORK/failure"
+! grep -qF READY "$SUMI_TEST_WORK/failure"
 if SUMI_PUBLIC="$SUMI_TEST_WORK/missing" timeout 5 "$site" > "$SUMI_TEST_WORK/failure" 2>&1; then fail 'missing assets accepted'; fi
 grep -qF SUMI_STATIC_READ "$SUMI_TEST_WORK/failure"
 grep -qF index.html "$SUMI_TEST_WORK/failure"

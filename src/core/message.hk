@@ -1,8 +1,57 @@
+use text
+use result
+use json
+use arrays
 namespace sumi
+
+def copyBody(body: Byte[]): Byte[]
+  return arrays::generate(body.Length) do |index|
+    return body[index]
+  end
+end
+
+def copyHeaders(headers: http::Headers): http::Headers
+  let copied = new http::Headers()
+  var index = 0
+
+  while index < headers.count()
+    copied.add(headers.nameAt(index), headers.valueAt(index))
+    index = index + 1
+  end
+  return copied
+end
+
+public class BodyFailure
+  public code: String
+  public message: String
+  public offset: Int
+
+  def init(code: String, message: String, offset: Int = 0): Void
+    this.code = code
+    this.message = message
+    this.offset = offset
+  end
+end
+
+def decodeText(body: Byte[]): result::Result<String, BodyFailure>
+  let decoded = text::fromBytes(body)
+
+  if decoded == null
+    let invalid = text::invalidUtf8Offset(body)
+    var offset = 0
+
+    offset = invalid if invalid != null
+    return result::Result<String, BodyFailure>.Error(new BodyFailure("invalid_utf8", "Body is not valid UTF-8", offset))
+  end
+  return result::Result<String, BodyFailure>.Ok(decoded)
+end
 
 public class Request
   public method: String
   public path: String
+  public body: Byte[] = []
+  public headers: http::Headers = new http::Headers()
+  public contentType: String = ""
   public query: String = ""
   public requestId: String = ""
   private parameters: PathParameter?
@@ -14,6 +63,7 @@ public class Request
 
   def param(name: String): String?
     var parameter = this.parameters
+
     while parameter != null
       if parameter.name == name
         return parameter.value
@@ -23,12 +73,29 @@ public class Request
     return null
   end
 
+  def text(): result::Result<String, BodyFailure>
+    return decodeText(this.body)
+  end
+
+  def json(options: json::Options? = null): result::Result<json::Value, BodyFailure>
+    return decodeJson(this, options)
+  end
+
+  def form(options: FormOptions? = null): result::Result<Form, BodyFailure>
+    return decodeForm(this, options)
+  end
+
   internal def matched(pattern: PathSegment?, path: PathSegment?): Request
     let request = new Request(this.method, this.path)
+
+    request.body = this.body
+    request.headers = this.headers
+    request.contentType = this.contentType
     request.query = this.query
     request.requestId = this.requestId
     var expected = pattern
     var actual = path
+
     while expected != null && actual != null
       if isParameter(expected.value)
         request.parameters = new PathParameter(parameterName(expected.value), actual.value, request.parameters)
@@ -42,20 +109,33 @@ end
 
 public class Response
   public status: Int
-  public body: String
+  public body: Byte[]
+  public headers: http::Headers = new http::Headers()
+  public allowedMethods: String[] = []
   public route: String = ""
   public diagnosticCode: String = ""
   public diagnosticMessage: String = ""
   public contentType: String = "text/plain; charset=utf-8"
 
-  def init(status: Int, body: String): Void
+  def init(status: Int, body: Byte[]): Void
     this.status = status
     this.body = body
+  end
+
+  def text(): result::Result<String, BodyFailure>
+    return decodeText(this.body)
   end
 end
 
 def text(body: String, status: Int = 200): Response
-  return new Response(status, body)
+  return new Response(status, text::bytes(body))
+end
+
+def binary(body: Byte[], contentType: String = "application/octet-stream", status: Int = 200): Response
+  let response = new Response(status, body)
+
+  response.contentType = contentType
+  return response
 end
 
 public class ConfigurationError
@@ -81,13 +161,15 @@ internal class PathParameter
 end
 
 def html(body: String, status: Int = 200): Response
-  let response = new Response(status, body)
+  let response = new Response(status, text::bytes(body))
+
   response.contentType = "text/html; charset=utf-8"
   return response
 end
 
 def failure(code: String, message: String, status: Int = 500): Response
   let response = text("Internal Server Error", status)
+
   response.diagnosticCode = code
   response.diagnosticMessage = message
   return response

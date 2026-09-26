@@ -1,0 +1,3 @@
+class ConcurrentCounter
+  public value: Int = 0
+end

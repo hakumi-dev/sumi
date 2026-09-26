@@ -1,38 +1,111 @@
-use http
 use clock
 use host
+use result
+use resources
+use text
 use sumi
 namespace sumiweb
 
-def wire(response: sumi.Response, head: Bool, requestId: Int = 0): String
+internal class WireResponse
+  public status: Int
+  public headers: String
+  public body: Byte[]
+
+  def init(status: Int, headers: String, body: Byte[]): Void
+    this.status = status
+    this.headers = headers
+    this.body = body
+  end
+end
+
+def validResponseHeaders(headers: http::Headers): Bool
+  var index = 0
+
+  while index < headers.count()
+    let name = http::lower(headers.nameAt(index))
+
+    if name == "content-length" || name == "transfer-encoding" || name == "connection" || name == "content-type" || name == "allow" || name == "x-request-id" || name == "x-content-type-options" || name == "trailer" || name == "upgrade" || name == "keep-alive" || name == "proxy-connection" || name == "te"
+      return false
+    end
+    if name == "location" || name == "content-location" || name == "etag" || name == "last-modified" || name == "retry-after" || name == "date" || name == "server"
+      if headers.values(name).Length > 1
+        return false
+      end
+    end
+    index = index + 1
+  end
+  return true
+end
+
+def wire(response: sumi::Response, head: Bool, requestId: String): WireResponse
   var status = response.status
   var body = response.body
   var contentType = response.contentType
-  if status < 200 || status > 599 || host.stringByteLength(body) > 1048576 || !sumi.validContentType(contentType)
+
+  let valid = status >= 200 && status <= 599 && body.Length <= 1048576 && sumi::validContentType(contentType) && validAllowedMethods(response.allowedMethods) && validResponseHeaders(response.headers)
+
+  if !valid
     status = 500
-    body = "Internal Server Error"
+    body = text::bytes("Internal Server Error")
     contentType = "text/plain; charset=utf-8"
   end
   var headers = "HTTP/1.1 " + (status as String) + " Response\r\nConnection: close\r\nContent-Type: " + contentType + "\r\nX-Content-Type-Options: nosniff\r\n"
-  headers = headers + "X-Request-Id: " + (requestId as String) + "\r\n"
-  if status == 405
-    headers = headers + "Allow: GET\r\n"
+
+  headers = headers + "X-Request-Id: " + requestId + "\r\n"
+  if valid && response.allowedMethods.Length > 0
+    var allow = ""
+
+    for method in response.allowedMethods
+      allow = allow + (allow == "" ? "" : ", ") + method
+    end
+    headers = headers + "Allow: " + allow + "\r\n"
+  end
+  if valid
+    var index = 0
+
+    while index < response.headers.count()
+      headers = headers + response.headers.nameAt(index) + ": " + response.headers.valueAt(index) + "\r\n"
+      index = index + 1
+    end
   end
   if status == 204 || status == 304
-    return headers + "\r\n"
+    return new WireResponse(status, headers + "\r\n", [])
   end
   if status == 205
-    body = ""
+    body = []
   end
-  headers = headers + "Content-Length: " + (host.stringByteLength(body) as String) + "\r\n\r\n"
-  return headers + (head ? "" : body)
+  headers = headers + "Content-Length: " + (body.Length as String) + "\r\n\r\n"
+  if head
+    return new WireResponse(status, headers, [])
+  end
+  return new WireResponse(status, headers, body)
+end
+
+def writeWire(fd: Int, response: WireResponse): Bool
+  unsafe
+    let started = http::netMilliseconds()
+
+    if started < 0
+      return false
+    end
+    let deadline = started + 2000
+
+    if http::writePayloadResult(fd, response.headers, null, deadline).failure != null
+      return false
+    end
+    return http::writePayloadResult(fd, "", response.body, deadline).failure == null
+  end
 end
 
 def rejection(status: Int): String
   if status == 405
-    return "Only GET requests are supported"
+    return "Method is not registered for this resource"
+  else if status == 501
+    return "HTTP method is not implemented"
+  else if status == 413
+    return "Request body exceeds the 1048576-byte limit"
   else if status == 408
-    return "Request headers did not complete within the two-second deadline"
+    return "Request did not complete within the two-second deadline"
   else if status == 417
     return "Expect headers are unsupported"
   else if status == 431
@@ -43,45 +116,24 @@ def rejection(status: Int): String
   return "Malformed request headers, target, or unsupported body framing"
 end
 
-def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
-  let startedAt = clock.milliseconds()
-  let event = new LogEvent("http.request.completed")
-  event.requestId = requestId as String
-  let started = new LogEvent("http.request.started")
-  started.requestId = event.requestId
-  emit(options, started)
-  let head = http.readHead(fd)
-  if head.status == 0
-    event.event = "http.request.incomplete"
-    event.level = "warning"
-    event.code = "SUMI_HTTP_READ"
-    event.message = "Connection ended or failed before complete request headers were received"
-    event.durationMs = elapsed(startedAt)
-    emit(options, event)
-    return
-  end
-  var response = sumi.text("Request rejected", head.status)
-  var omitBody = false
-  if head.status == 200
-    let parsed = http.parse(head.text)
-    omitBody = parsed.head
-    response = sumi.text("Request rejected", parsed.status)
-    let incoming = parsed.request
-    if incoming != null
-      let request = new sumi.Request(incoming.method, incoming.path)
-      request.query = incoming.query
-      request.requestId = event.requestId
-      event.method = request.method
-      response = app.handle(request)
-    else
-      event.code = "SUMI_HTTP_" + (parsed.status as String)
-      event.message = rejection(parsed.status)
-    end
+def prepareConnectionResponse(app: sumi::App, incoming: Incoming, event: LogEvent): WireResponse
+  var response = sumi::text("Request rejected", incoming.status)
+  let omitBody = incoming.head
+  let request = incoming.request
+
+  if request != null
+    let appStartedAt = clock::milliseconds()
+
+    response = app.handle(request)
+    event.appMs = elapsed(appStartedAt)
   else
-    event.code = "SUMI_HTTP_" + (head.status as String)
-    event.message = rejection(head.status)
+    event.code = "SUMI_HTTP_" + (incoming.status as String)
+    event.message = rejection(incoming.status)
   end
   event.route = response.route
+  if event.route == "" && request != null
+    event.path = request.path
+  end
   if response.diagnosticCode != ""
     event.code = response.diagnosticCode
     event.message = response.diagnosticMessage
@@ -89,16 +141,24 @@ def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
   if response.status < 200 || response.status > 599
     event.code = "SUMI_RESPONSE_STATUS"
     event.message = "Response status " + (response.status as String) + " is outside 200..599"
-  else if host.stringByteLength(response.body) > 1048576
+  else if response.body.Length > 1048576
     event.code = "SUMI_RESPONSE_SIZE"
     event.message = "Response exceeds the 1048576-byte limit"
-  else if !sumi.validContentType(response.contentType)
+  else if !sumi::validContentType(response.contentType)
     event.code = "SUMI_RESPONSE_CONTENT_TYPE"
     event.message = "Response content type is invalid or contains header controls"
   end
-  let output = wire(response, omitBody, requestId)
-  let status = host.parseInt(host.stringSlice(output, 9, 3))
-  event.status = status if status != null
+  if !validAllowedMethods(response.allowedMethods)
+    event.code = "SUMI_RESPONSE_ALLOW"
+    event.message = "Response Allow contains an unsupported method"
+  end
+  if !validResponseHeaders(response.headers)
+    event.code = "SUMI_RESPONSE_HEADERS"
+    event.message = "Response headers include a reserved field or a repeated singleton field"
+  end
+  let output = wire(response, omitBody, event.requestId)
+
+  event.status = output.status
   if event.status >= 500
     event.level = "error"
   else if event.status >= 400
@@ -112,18 +172,34 @@ def connection(fd: Int, app: sumi.App, options: Options?, requestId: Int): Void
     event.code = "SUMI_HANDLER_ERROR"
     event.message = "Application returned a server error without diagnostic details"
   end
-  if !http.writeText(fd, output)
+  return output
+end
+
+def connection(fd: Int, app: sumi::App, options: Options?, incoming: Incoming, event: LogEvent, startedAt: Int?): Void
+  let output = prepareConnectionResponse(app, incoming, event)
+  let writeStartedAt = clock::milliseconds()
+
+  if !writeWire(fd, output)
     event.event = "http.response.write_failed"
     event.level = "error"
     event.code = "SUMI_HTTP_WRITE"
     event.message = "Socket write failed or exceeded the two-second deadline; response delivery is incomplete"
   end
+  event.writeMs = elapsed(writeStartedAt)
+  event.durationMs = elapsed(startedAt)
+  emit(options, event)
+end
+
+def reportStoppedRequest(options: Options?, event: LogEvent, startedAt: Int?): Void
+  event.event = "http.request.stopped"
+  event.code = "SUMI_HTTP_STOPPED"
+  event.message = "Server stopped before application dispatch"
   event.durationMs = elapsed(startedAt)
   emit(options, event)
 end
 
 def elapsed(startedAt: Int?): Int
-  let finishedAt = clock.milliseconds()
+  let finishedAt = clock::milliseconds()
 
   if startedAt != null && finishedAt != null
     return finishedAt - startedAt
@@ -132,76 +208,191 @@ def elapsed(startedAt: Int?): Int
   return -1
 end
 
-def serve(app: sumi.App, address: String, options: Options? = null): ServerError
+def serve(app: sumi::App, address: String, options: Options? = null): ServerError?
   if options != null && levelRank(options.minimumLevel) < 0
     return new ServerError("SUMI_LOG_LEVEL", "Log level must be debug, info, warning, error, or off")
   end
 
   let configurationError = app.prepare()
+
   if configurationError != null
     return new ServerError(configurationError.code, configurationError.message)
   end
-  if host.stringByteLength(address) < 11 || host.stringSlice(address, 0, 10) != "127.0.0.1:"
+  if host::stringByteLength(address) < 11 || host::stringSlice(address, 0, 10) != "127.0.0.1:"
     return new ServerError("SUMI_LISTEN_ADDRESS", "Address must be 127.0.0.1:<port>")
   end
-  let portText = host.stringSlice(address, 10, host.stringByteLength(address) - 10)
-  let port = host.parseInt(portText)
+  let portText = host::stringSlice(address, 10, host::stringByteLength(address) - 10)
+  let port = host::parseInt(portText)
+
   if port == null || port < 1 || port > 65535
     return new ServerError("SUMI_LISTEN_PORT", "Port must be an integer from 1 to 65535")
   end
-  unsafe
-    let listener = http.netOpen()
-    if listener < 0
-      return new ServerError("SUMI_LISTEN_OPEN", "Open listener: " + http.socketError())
-    end
-    var operation = ""
-    if http.netConfigure(listener) < 0
-      operation = "configure"
-    else if http.netBind(listener, port) < 0
-      operation = "bind"
-    else if http.netListen(listener) < 0
-      operation = "listen"
-    end
-    if operation != ""
-      let detail = http.socketError()
-      http.netClose(listener)
-      return new ServerError("SUMI_LISTEN_SETUP", "Cannot " + operation + " listener at " + address + ": " + detail)
-    end
-    if options != null
-      let onListening = options.onListening
-      onListening(address) if onListening != null
-    end
-    var requestId = 0
-    while true
-      let ready = http.netPoll(listener, 0, -1)
-      if ready == -1
-        let error = new ServerError("SUMI_LISTEN_POLL", "Wait for connection: " + http.socketError())
-        http.netClose(listener)
-        return error
+  var handleInterrupts = true
+  var forceExitAfterStopMilliseconds: Int? = null
+  var stop: http::Stop? = null
+
+  if options != null
+    handleInterrupts = options.handleInterrupts
+    forceExitAfterStopMilliseconds = options.forceExitAfterStopMilliseconds
+    stop = options.stop
+  end
+  let outcome = serveScoped(app, address, port, options, handleInterrupts, forceExitAfterStopMilliseconds, stop)
+  var error: ServerError? = null
+
+  match outcome.completion
+    case resources::Completion.Value(value)
+      error = value
+    case resources::Completion.Failure(failure)
+      if failure != null
+        error = new ServerError("SUMI_LIFETIME_OPEN", "Open server lifetime: " + failure.detail)
+      else
+        error = new ServerError("SUMI_LIFETIME_OPEN", "Open server lifetime failed without a diagnostic")
       end
-      if ready > 0
-        let fd = http.netAccept(listener)
-        if fd == -1
-          let error = new ServerError("SUMI_LISTEN_ACCEPT", "Accept connection: " + http.socketError())
-          http.netClose(listener)
-          return error
-        end
-        if fd >= 0
-          requestId = requestId + 1
-          if http.netConfigure(fd) == 0
-            connection(fd, app, options, requestId)
-          else
-            let event = new LogEvent("http.connection.failed")
-            event.requestId = requestId as String
-            event.level = "error"
-            event.code = "SUMI_CONNECTION_CONFIGURE"
-            event.message = http.socketError()
-            emit(options, event)
+  end
+  if outcome.closeFailures.count() > 0
+    let closed = new ServerError("SUMI_LIFETIME_CLOSE", "Close server lifetime")
+
+    outcome.closeFailures.each() do |failure|
+      closed.message = closed.message + "; " + failure.code + ": " + failure.detail
+    end
+    error = preservePrimary(error, closed)
+  end
+  return error
+end
+
+def serveScoped(app: sumi::App, address: String, port: Int, options: Options?, handleInterrupts: Bool, forceExitAfterStopMilliseconds: Int?, stop: http::Stop?): resources::Outcome<ServerError?, result::Failure>
+  using lifetime <- http::Lifetime.open(handleInterrupts, forceExitAfterStopMilliseconds, stop)
+    if lifetime.isStopping()
+      return null
+    end
+    unsafe
+      let listener = http::netOpen()
+
+      if listener < 0
+        return new ServerError("SUMI_LISTEN_OPEN", "Open listener: " + http::socketError())
+      end
+      var operation = ""
+
+      if http::netConfigure(listener) < 0
+        operation = "configure"
+      else if http::netBind(listener, port) < 0
+        operation = "bind"
+      else if http::netListen(listener) < 0
+        operation = "listen"
+      end
+      if operation != ""
+        let detail = http::socketError()
+
+        let error = new ServerError("SUMI_LISTEN_SETUP", "Cannot " + operation + " listener at " + address + ": " + detail)
+
+        return withClose(error, listener)
+      end
+      var error: ServerError? = null
+
+      if options != null
+        let onListening = options.onListening
+
+        onListening(address) if onListening != null
+      end
+      while error == null && !lifetime.isStopping()
+        let ready = http::netPoll(listener, 0, lifetime.pollMilliseconds())
+
+        if ready == -1
+          error = new ServerError("SUMI_LISTEN_POLL", "Wait for connection: " + http::socketError())
+        else if ready > 0 && !lifetime.isStopping()
+          let fd = http::netAccept(listener)
+
+          if fd == -1
+            error = new ServerError("SUMI_LISTEN_ACCEPT", "Accept connection: " + http::socketError())
+          else if fd >= 0
+            if !lifetime.isStopping()
+              let requestId = newRequestId()
+
+              if requestId == null
+                error = new ServerError("SUMI_REQUEST_ID_ENTROPY", "Cannot obtain secure randomness for a request UUID")
+              else if http::netConfigure(fd) == 0
+                let startedAt = clock::milliseconds()
+                let event = new LogEvent("http.request.completed")
+                let started = new LogEvent("http.request.started")
+
+                event.requestId = requestId
+                started.requestId = requestId
+                emit(options, started)
+                if lifetime.isStopping()
+                  reportStoppedRequest(options, event, startedAt)
+                else
+                  let incoming = readRequest(fd)
+                  let request = incoming.request
+
+                  event.readMs = elapsed(startedAt)
+                  if request != null
+                    request.requestId = event.requestId
+                    event.method = request.method
+                  end
+                  if request != null && !lifetime.isStopping()
+                    let dispatching = new LogEvent("http.request.dispatching")
+
+                    dispatching.level = "debug"
+                    dispatching.requestId = event.requestId
+                    dispatching.method = event.method
+                    emit(options, dispatching)
+                  end
+
+                  if lifetime.isStopping()
+                    reportStoppedRequest(options, event, startedAt)
+                  else
+                    connection(fd, app, options, incoming, event, startedAt)
+                  end
+                end
+              else
+                let event = new LogEvent("http.connection.failed")
+
+                event.requestId = requestId
+                event.level = "error"
+                event.code = "SUMI_CONNECTION_CONFIGURE"
+                event.message = http::socketError()
+                emit(options, event)
+              end
+            end
+            error = withClose(error, fd)
           end
-          http.netClose(fd)
         end
       end
+      lifetime.requestStop()
+      error = withClose(error, listener)
+      if options != null
+        let onShutdown = options.onShutdown
+
+        onShutdown() if onShutdown != null
+      end
+      return error
     end
   end
-  return new ServerError("SUMI_LISTEN_STOPPED", "Listener stopped")
+  return null
+end
+
+def withClose(primary: ServerError?, fd: Int): ServerError?
+  unsafe
+    if http::netCloseResult(fd) < 0
+      return preservePrimary(primary, new ServerError("SUMI_SOCKET_CLOSE", "Close socket: " + http::socketError()))
+    end
+  end
+  return primary
+end
+
+def preservePrimary(primary: ServerError?, closeError: ServerError): ServerError
+  if primary == null
+    return closeError
+  end
+  primary.message = primary.message + "; additionally " + closeError.code + ": " + closeError.message
+  return primary
+end
+
+def validAllowedMethods(methods: String[]): Bool
+  for method in methods
+    if !sumi::supportedMethod(method)
+      return false
+    end
+  end
+  return true
 end

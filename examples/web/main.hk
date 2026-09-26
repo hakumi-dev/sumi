@@ -4,50 +4,92 @@ use sumiweb
 use http
 use host
 use console
+use result
+use text
+use workers
+
+# Application initializer for the persistent Sumi console; does not start HTTP.
+def consoleApp(): sumi::App
+  var root = "public"
+  let configured = host::environment("SUMI_PUBLIC")
+
+  root = configured if configured != null
+  let app = exampleweb::application(root)
+  let error = app.prepare()
+
+  if error != null
+    console::println(error.code + ": " + error.message)
+    host::exit(1)
+  end
+  return app
+end
+
+# Each worker constructs its own application in its private heap.
+def workerEntry(config: Byte[]): Void
+  let root = text::fromBytes(config)
+
+  if root == null
+    workers::fail(text::bytes("SUMI_WORKER_CONFIG: Public root is not valid UTF-8"))
+    return
+  end
+  let app = exampleweb::application(root)
+
+  match sumiweb::runWorker(app)
+    case result::Result.Error(failure)
+      workers::fail(text::bytes(failure.code + ": " + failure.detail))
+    case result::Result.Ok(completed)
+  end
+end
 
 def main(): Void
   var environmentName = "production"
-  let selectedEnvironment = host.environment("SUMI_ENV")
+  let selectedEnvironment = host::environment("SUMI_ENV")
+
   environmentName = selectedEnvironment if selectedEnvironment != null
 
-  let settings = new sumi.Environment(environmentName)
+  let settings = new sumi::Environment(environmentName)
   let settingsError = settings.load(".")
 
   if settingsError != null
-    console.println(settingsError.code + ": " + settingsError.message)
-    host.exit(1)
+    console::println(settingsError.code + ": " + settingsError.message)
+    host::exit(1)
     return
   end
 
   var root = "examples/web/public"
   let configuredRoot = settings.get("SUMI_PUBLIC")
-  root = configuredRoot if configuredRoot != null
 
-  let app = exampleweb.application(root)
+  root = configuredRoot if configuredRoot != null
 
   var port = "8080"
   let configuredPort = settings.get("PORT")
+
   port = configuredPort if configuredPort != null
 
-  let options = new sumiweb.Options()
+  let options = new sumiweb::ConcurrentOptions()
+
   let logLevel = settings.get("LOG_LEVEL")
+
   options.minimumLevel = logLevel if logLevel != null
 
   options.onListening = fn(address)
-    console.println("Sumi listening on http://" + address)
+    console::println("Sumi listening on http://" + address)
   end
 
   options.log = fn(event)
-    console.println(sumiweb.format(event))
+    sumiweb::logConsole(event)
   end
 
-  let error = sumiweb.serve(app, "127.0.0.1:" + port, options)
+  let error = sumiweb::serveConcurrent(workerEntry, text::bytes(root), "127.0.0.1:" + port, options)
 
-  let event = new sumiweb.LogEvent("server.failed")
-  event.level = "error"
-  event.code = error.code
-  event.message = error.message
+  if error != null
+    let event = new sumiweb::LogEvent("server.failed")
 
-  console.println(sumiweb.format(event))
-  host.exit(1)
+    event.level = "error"
+    event.code = error.code
+    event.message = error.message
+
+    sumiweb::logConsole(event)
+    host::exit(1)
+  end
 end

@@ -1,0 +1,112 @@
+use arrays
+use sumiweb
+use test
+use text
+
+def fragmentedBinary(): Void
+  let value = sumiweb::RequestReader.create()
+  let first = text::bytes("POST /echo HTTP/1.1\r\nHost: local\r\nContent-Length: 5\r")
+  let second = text::bytes("\n\r")
+  let third = [10 as Byte, 0 as Byte, 255 as Byte, 13 as Byte, 10 as Byte, 65 as Byte, 90 as Byte]
+
+  test::assertTrue(value != null)
+  if value == null
+    return
+  end
+
+  test::assertEqual(value.feed(first), first.Length)
+  test::assertTrue(!value.isComplete())
+  test::assertEqual(value.feed(second), second.Length)
+  test::assertTrue(!value.isComplete())
+  test::assertEqual(value.feed(third), 6)
+  test::assertTrue(value.isComplete())
+  let incoming = value.outcome()
+
+  test::assertTrue(incoming != null)
+  if incoming != null
+    let request = incoming.request
+
+    test::assertEqual(incoming.status, 200)
+    test::assertTrue(request != null)
+    if request != null
+      test::assertEqual(request.body.Length, 5)
+      test::assertEqual(request.body[0] as Int, 0)
+      test::assertEqual(request.body[1] as Int, 255)
+      test::assertEqual(request.body[2] as Int, 13)
+      test::assertEqual(request.body[3] as Int, 10)
+      test::assertEqual(request.body[4] as Int, 65)
+    end
+  end
+
+  test::assertEqual(value.feed([90 as Byte]), 0)
+end
+
+def limits(): Void
+  let body = sumiweb::RequestReader.create()
+
+  test::assertTrue(body != null)
+  if body == null
+    return
+  end
+  body.feed(text::bytes("POST / HTTP/1.1\r\nHost: local\r\nContent-Length: 1048577\r\n\r\n"))
+  let bodyOutcome = body.outcome()
+
+  test::assertTrue(bodyOutcome != null)
+  if bodyOutcome != null
+    test::assertEqual(bodyOutcome.status, 413)
+  end
+  let header = sumiweb::RequestReader.create()
+  let oversized: Byte[] = arrays::generate(8192) do |index|
+    return 65 as Byte
+  end
+
+  test::assertTrue(header != null)
+  if header == null
+    return
+  end
+
+  test::assertEqual(header.feed(oversized), 8192)
+  let headerOutcome = header.outcome()
+
+  test::assertTrue(headerOutcome != null)
+  if headerOutcome != null
+    test::assertEqual(headerOutcome.status, 431)
+  end
+end
+
+def invalidRange(): Void
+  let value = sumiweb::RequestReader.create()
+
+  test::assertTrue(value != null)
+  if value == null
+    return
+  end
+
+  test::assertEqual(value.feed(text::bytes("GET / HTTP/1.1\r\n\r\n"), -1), 0)
+  let incoming = value.outcome()
+
+  test::assertTrue(incoming != null)
+  if incoming != null
+    test::assertEqual(incoming.status, 400)
+  end
+  let count = sumiweb::RequestReader.create()
+
+  test::assertTrue(count != null)
+  if count == null
+    return
+  end
+
+  test::assertEqual(count.feed([65 as Byte], 0, 2), 0)
+  let countOutcome = count.outcome()
+
+  test::assertTrue(countOutcome != null)
+  if countOutcome != null
+    test::assertEqual(countOutcome.status, 400)
+  end
+end
+
+def main(): Void
+  fragmentedBinary()
+  limits()
+  invalidRange()
+end

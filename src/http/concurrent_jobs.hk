@@ -1,0 +1,76 @@
+use arrays
+namespace sumiweb
+
+# Each connection owns at most one outstanding job. Bucket chains reuse its
+# table slot, keeping admission and completion lookup free of per-job allocation.
+internal class ConcurrentJobs
+  private buckets: Int[]
+  private next: Int[]
+  private tickets: UInt64[]
+  private used: Int = 0
+
+  def init(capacity: Int): Void
+    this.buckets = arrays::generate<Int>(capacity * 2 + 1) do |index|
+      return -1
+    end
+    this.next = arrays::generate<Int>(capacity) do |index|
+      return -1
+    end
+    this.tickets = arrays::generate<UInt64>(capacity) do |index|
+      return 0 as UInt64
+    end
+  end
+
+  def count(): Int
+    return this.used
+  end
+
+  def add(ticket: UInt64, slot: Int): Bool
+    if ticket == (0 as UInt64) || slot < 0 || slot >= this.tickets.Length || this.tickets[slot] != (0 as UInt64)
+      return false
+    end
+    let bucket = this.bucket(ticket)
+    var current = this.buckets[bucket]
+
+    while current >= 0
+      if this.tickets[current] == ticket
+        return false
+      end
+      current = this.next[current]
+    end
+    this.tickets[slot] = ticket
+    this.next[slot] = this.buckets[bucket]
+    this.buckets[bucket] = slot
+    this.used = this.used + 1
+    return true
+  end
+
+  def take(ticket: UInt64): Int?
+    let bucket = this.bucket(ticket)
+    var current = this.buckets[bucket]
+    var previous = -1
+
+    while current >= 0
+      if this.tickets[current] == ticket
+        if previous < 0
+          this.buckets[bucket] = this.next[current]
+        else
+          this.next[previous] = this.next[current]
+        end
+        this.tickets[current] = 0 as UInt64
+        this.next[current] = -1
+        this.used = this.used - 1
+        return current
+      end
+      previous = current
+      current = this.next[current]
+    end
+    return null
+  end
+
+  private def bucket(ticket: UInt64): Int
+    let count = this.buckets.Length as UInt64
+
+    return (ticket - (ticket / count) * count) as Int
+  end
+end

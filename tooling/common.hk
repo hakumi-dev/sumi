@@ -1,0 +1,402 @@
+use host
+use console
+use files
+use process
+use result
+use crypto
+use tasks
+use buffers
+namespace distribution
+
+@cabiImport("neri_rt_v1_host_canonical_path")
+unsafe def nativeCanonicalPath(path: Byte*, output: Byte*, capacity: Int): Int
+end
+
+def canonicalPath(path: String): String
+  let size = host::stringByteLength(path)
+
+  if size > 32768
+    fail("Path exceeds the supported limit")
+    return ""
+  end
+  var index = 0
+
+  while index < size
+    if host::stringByteAt(path, index) == 0 as Byte
+      fail("Path contains NUL")
+      return ""
+    end
+    index = index + 1
+  end
+  let encoded = buffers::ByteBuffer.create(size + 1)
+
+  if encoded == null || !encoded.appendText(path) || !encoded.append(0 as Byte)
+    fail("Cannot encode path")
+    return ""
+  end
+  let input = encoded.snapshot()
+  var length = -1
+
+  unsafe
+    borrow input as pointer
+      length = nativeCanonicalPath(pointer, pointer, 0)
+    end
+  end
+  if length < 0 || length > 32768
+    fail("Cannot canonicalize " + path)
+    return ""
+  end
+  let output: Byte[] = tasks::generate(length + 1, 1) do |index|
+    return 0 as Byte
+  end
+
+  unsafe
+    borrow input as inputPointer
+      borrow output as outputPointer
+        if nativeCanonicalPath(inputPointer, outputPointer, length + 1) != length
+          fail("Path changed while canonicalizing " + path)
+          return ""
+        end
+      end
+    end
+  end
+  let decoded = host::stringFromBytes(output)
+
+  if decoded == null
+    fail("Canonical path is not UTF-8")
+    return ""
+  end
+  return host::stringSlice(decoded, 0, length)
+end
+
+def fail(message: String): Void
+  console::println("SUMI_PACKAGE: " + message)
+  host::exit(1)
+end
+
+def envOr(name: String, fallback: String): String
+  let value = host::environment(name)
+
+  return value if value != null && value != ""
+  return fallback
+end
+
+def textAt(path: String): String
+  let text = host::readText(path)
+
+  if text == null
+    fail("Missing or unreadable " + path + ". Reinstall a complete Sumi package.")
+    return ""
+  end
+  return text
+end
+
+def write(path: String, text: String): Void
+  if !host::writeText(path, text)
+    fail("Cannot write " + path)
+  end
+end
+
+def checked(command: String, args: String[]): Void
+  let status = host::run(command, args)
+
+  if status == null || status != 0
+    fail("Command failed: " + command)
+  end
+end
+
+def capture(command: String, args: String[]): String
+  let options = new process::SpawnOptions(command)
+
+  options.arguments = args
+  match process::run(options)
+    case result::Result.Ok(output)
+      let status = output.exit
+      let text = host::stringFromBytes(output.stdout)
+
+      if status == null || status.value() != 0 || text == null || output.stdoutTruncated
+        fail("Cannot capture " + command)
+        return ""
+      end
+      return text
+    case result::Result.Error(problem)
+      fail("Cannot run " + command + ": " + problem.code)
+      return ""
+  end
+end
+
+def trimLine(text: String): String
+  var length = host::stringByteLength(text)
+
+  while length > 0 && host::stringByteAt(text, length - 1) == 10 as Byte
+    length = length - 1
+  end
+  return host::stringSlice(text, 0, length)
+end
+
+def parent(path: String): String
+  var index = host::stringByteLength(path) - 1
+
+  while index > 0
+    if host::stringByteAt(path, index) == 47 as Byte
+      return host::stringSlice(path, 0, index)
+    end
+    index = index - 1
+  end
+  return "/"
+end
+
+def absolute(path: String): String
+  let value = host::pathAbsolute(path)
+
+  if value == null
+    fail("Cannot resolve " + path)
+    return ""
+  end
+  return canonicalPath(value)
+end
+
+def digest(path: String): String
+  let read = files::readBytes(path, 134217728)
+  let bytes = read.bytes
+
+  if bytes == null || read.failure != null || read.closeFailure != null
+    fail("Cannot hash " + path)
+    return ""
+  end
+  let hash = crypto::sha256(bytes).bytes()
+
+  if hash == null
+    fail("SHA-256 failed")
+    return ""
+  end
+  let encoded = crypto::encodeHex(hash)
+
+  if encoded == null
+    fail("Cannot encode SHA-256")
+    return ""
+  end
+  return encoded
+end
+
+def less(left: String, right: String): Bool
+  var index = 0
+
+  while index < host::stringByteLength(left) && index < host::stringByteLength(right)
+    let a = host::stringByteAt(left, index)
+    let b = host::stringByteAt(right, index)
+
+    if a != b
+      return (a as Int) < (b as Int)
+    end
+    index = index + 1
+  end
+  return host::stringByteLength(left) < host::stringByteLength(right)
+end
+
+def startsWith(text: String, prefix: String): Bool
+  if host::stringByteLength(text) < host::stringByteLength(prefix)
+    return false
+  end
+  var index = 0
+
+  while index < host::stringByteLength(prefix)
+    if host::stringByteAt(text, index) != host::stringByteAt(prefix, index)
+      return false
+    end
+    index = index + 1
+  end
+  return true
+end
+
+def operation(value: files::OperationResult): Void
+  let problem = value.failure
+
+  if problem != null
+    fail(problem.operation + ": " + problem.code)
+  end
+end
+
+def exists(path: String): Bool
+  let status = files::status(path).status
+
+  return status != null && status.exists
+end
+
+# Enumerate through rooted APIs and reject symlinks. Sorted names make manifests
+# independent of filesystem enumeration order. Only regular files are packaged.
+def treeManifest(root: String, relative: String = ""): String
+  let opened = files::Root.open(root)
+  let directory = opened.root
+
+  if directory == null
+    fail("Cannot enumerate " + root)
+    return ""
+  end
+  let listing = directory.list(relative)
+  let closed = directory.close()
+
+  if listing.failure != null || listing.closeFailure != null || closed != null
+    fail("Cannot enumerate package inputs")
+  end
+  var names: String[] = []
+
+  for entry in listing.entries
+    names = host::appendString(names, entry.name)
+  end
+  var i = 0
+
+  while i < names.Length
+    var j = i + 1
+
+    while j < names.Length
+      if less(names[j], names[i])
+        let saved = names[i]
+
+        names[i] = names[j]
+        names[j] = saved
+      end
+      j = j + 1
+    end
+    i = i + 1
+  end
+  var manifest = ""
+
+  for name in names
+    let path = relative == "" ? name : relative + "/" + name
+    let inspected = files::status(root + "/" + path).status
+
+    if inspected == null || inspected.symlink
+      fail("Symlinks are not package inputs: " + path)
+    else if inspected.kind.isDirectory()
+      manifest = manifest + treeManifest(root, path)
+    else if inspected.kind.isFile()
+      if path != "ARTIFACTS.sha256"
+        manifest = manifest + digest(root + "/" + path) + "  " + path + "\n"
+      end
+    else
+      fail("Unsupported package entry: " + path)
+    end
+  end
+  return manifest
+end
+
+def selectedRuntimeRoot(command: String): String
+  let options = new process::SpawnOptions(command)
+
+  options.arguments = ["--print-runtime-manifest"]
+  match process::run(options)
+    case result::Result.Ok(output)
+      let status = output.exit
+      let text = host::stringFromBytes(output.stdout)
+
+      if status == null || !status.isExited() || status.value() != 0 || text == null || output.stdoutTruncated
+        fail("SUMI_CONSOLE_TOOLCHAIN: Selected Neri compiler cannot report its runtime manifest: " + command)
+        return ""
+      end
+      let manifest = trimLine(text)
+
+      if !startsWith(manifest, "/") || !exists(manifest)
+        fail("SUMI_CONSOLE_TOOLCHAIN: Selected Neri compiler reported an unavailable runtime manifest: " + manifest)
+        return ""
+      end
+      let canonical = canonicalPath(manifest)
+      let root = parent(parent(canonical))
+
+      if canonical != root + "/lib/neri-runtime.json"
+        fail("SUMI_CONSOLE_TOOLCHAIN: Selected Neri compiler reported a runtime manifest outside a package layout: " + canonical)
+        return ""
+      end
+      return root
+    case result::Result.Error(problem)
+      fail("SUMI_CONSOLE_TOOLCHAIN: Cannot query selected Neri compiler " + command + ": " + problem.code)
+      return ""
+  end
+end
+
+def requireToolchainFile(root: String, relative: String): Void
+  let path = root + "/" + relative
+  let inspected = files::status(canonicalPath(path))
+  let status = inspected.status
+
+  if inspected.failure != null || status == null || !status.kind.isFile()
+    fail("SUMI_CONSOLE_TOOLCHAIN: Selected Neri toolchain is incomplete; missing " + path + ". Install a complete Neri package.")
+  end
+end
+
+class Toolchain
+  public root: String
+  public command: String
+  public sessionCompiler: String
+  public target: String
+  public linker: String
+  public sdk: String
+
+  def init(): Void
+    this.command = trimLine(capture("/usr/bin/which", [envOr("NERI", "neri")]))
+    this.command = trimLine(capture("realpath", [this.command]))
+    this.root = parent(parent(this.command))
+    this.sessionCompiler = this.root + "/libexec/neri"
+    if !exists(this.root + "/ARTIFACTS.sha256")
+      this.root = selectedRuntimeRoot(this.command)
+      this.sessionCompiler = this.command
+    end
+    for relative in ["ARTIFACTS.sha256", "share/neri/manifest.json", "lib/neri-runtime.json", "libexec/neri", "libexec/neri-host", "bin/neri-codegen"]
+      requireToolchainFile(this.root, relative)
+    end
+    let platform = trimLine(capture("uname", ["-s"]))
+    let arch = trimLine(capture("uname", ["-m"]))
+
+    this.sdk = ""
+    var llvm = envOr("LLVM_PREFIX", "")
+
+    if platform == "Darwin" && arch == "arm64"
+      this.target = "macos-arm64"
+      if llvm == ""
+        llvm = trimLine(capture("brew", ["--prefix", "llvm@22"]))
+      end
+      this.sdk = envOr("SDKROOT", "")
+      if this.sdk == ""
+        this.sdk = trimLine(capture("xcrun", ["--show-sdk-path"]))
+      end
+    else if platform == "Linux" && arch == "x86_64"
+      this.target = "linux-x86_64"
+      llvm = llvm == "" ? "/usr/lib/llvm-22" : llvm
+    else
+      fail("Unsupported platform " + platform + "/" + arch)
+      this.target = "unsupported"
+    end
+    this.linker = llvm + "/bin/clang++"
+    if trimLine(capture(llvm + "/bin/llvm-config", ["--version"])) != "22.1.8"
+      fail("Neri requires LLVM 22.1.8; select a compatible LLVM_PREFIX.")
+    end
+  end
+
+  def identity(): String
+    return "sumi-console-contract-v1\n" + this.target + "\n" + digest(this.root + "/ARTIFACTS.sha256") + "\n" + digest(this.root + "/lib/neri-runtime.json") + "\n" + digest(this.root + "/share/neri/manifest.json") + "\n"
+  end
+
+  def environment(): String[]
+    return ["NERI_TARGET=" + this.target, "NERI_LINKER=" + this.linker, "SDKROOT=" + this.sdk,
+      "NERI_HOST=" + this.root + "/libexec/neri-host", "NERI_CODEGEN=" + this.root + "/bin/neri-codegen",
+      "NERI_RUNTIME_MANIFEST=" + this.root + "/lib/neri-runtime.json", "NERI_STDLIB=" + this.root + "/stdlib",
+      "NERI_SESSION_COMPILER=" + this.sessionCompiler, "NERI_LIBRARY_PATH=" + this.root + "/lib",
+      "NERI_SESSION_WORK=" + envOr("NERI_SESSION_WORK", envOr("TMPDIR", "/tmp"))]
+  end
+end
+
+def verify(package: String, toolchain: Toolchain): Void
+  if textAt(package + "/compatibility.txt") != toolchain.identity()
+    fail("SUMI_CONSOLE_INCOMPATIBLE: Install a Sumi binary package built for the selected Neri toolchain (" + toolchain.target + ", " + digest(toolchain.root + "/ARTIFACTS.sha256") + "). No compilation was started.")
+  end
+  if treeManifest(package) != textAt(package + "/ARTIFACTS.sha256")
+    fail("SUMI_PACKAGE_CORRUPT: Package contents differ from ARTIFACTS.sha256. Reinstall the package.")
+  end
+  for path in ["bin/sumi", "libexec/sumi", "libexec/sumi-console", "libexec/sumi-build", "libexec/sumi-package"]
+    let status = files::status(package + "/" + path).status
+
+    if status == null || !status.executable
+      fail("SUMI_PACKAGE_CORRUPT: Missing executable " + path)
+    end
+  end
+end

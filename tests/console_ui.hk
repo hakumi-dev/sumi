@@ -1,0 +1,235 @@
+use host
+use console
+use process
+use result
+use buffers
+use distribution
+use files
+
+def contains(text: String, part: String): Bool
+  var offset = 0
+
+  while offset + host::stringByteLength(part) <= host::stringByteLength(text)
+    var matches = true
+    var index = 0
+
+    while index < host::stringByteLength(part)
+      if host::stringByteAt(text, offset + index) != host::stringByteAt(part, index)
+        matches = false
+        break
+      end
+      index = index + 1
+    end
+    if matches
+      return true
+    end
+    offset = offset + 1
+  end
+  return false
+end
+
+def require(value: Bool, message: String, transcript: String): Void
+  if !value
+    console::println(transcript)
+    distribution::fail(message)
+  end
+end
+
+def frame(buffer: buffers::ByteBuffer, text: String): Void
+  var size = host::stringByteLength(text)
+  var index = 0
+
+  while index < 4
+    let appended = buffer.append((size - (size / 256) * 256) as Byte)
+
+    size = size / 256
+    index = index + 1
+  end
+  let appended = buffer.appendText(text)
+end
+
+def leftKeys(count: Int): String
+  let escape = host::stringFromBytes([27 as Byte])
+
+  if escape == null
+    distribution::fail("Cannot encode terminal key")
+    return ""
+  end
+  var text = ""
+  var index = 0
+
+  while index < count
+    text = text + escape + "[D"
+    index = index + 1
+  end
+  return text
+end
+
+def rightKeys(key: String): String
+  let escape = host::stringFromBytes([27 as Byte])
+
+  if escape == null
+    distribution::fail("Cannot encode terminal key")
+    return ""
+  end
+  return escape + "[" + key
+end
+
+def escapeKey(value: Int = 27): String
+  let escape = host::stringFromBytes([value as Byte])
+
+  if escape == null
+    distribution::fail("Cannot encode Escape")
+    return ""
+  end
+  return escape
+end
+
+def runConsoleScenario(options: process::SpawnOptions): result::Result<process::PollResult, result::Failure>
+  let started = process::spawn(options)
+  let child = started.child()
+
+  if child == null
+    return result::Result<process::PollResult, result::Failure>.Error(new result::Failure("spawn_failed", "console-ui"))
+  end
+  var output = child.wait(30000)
+  var remaining = 3
+
+  while output.running && output.failure == null && remaining > 0
+    output = child.wait(30000)
+    remaining = remaining - 1
+  end
+  child.cancel() if output.running
+  child.dispose()
+  return result::Result<process::PollResult, result::Failure>.Ok(output)
+end
+
+def exercise(cli: String, project: String, driver: String, terminal: Bool, noColor: Bool): String
+  let options = new process::SpawnOptions(terminal ? driver : cli)
+  var cache = ""
+
+  options.arguments = ["c", "--project", project]
+  if terminal
+    options.arguments = [cli, project, "--drive"]
+  end
+  if terminal
+    cache = distribution::trimLine(distribution::capture("mktemp", ["-d"]))
+    options.environment = [new process::EnvironmentEntry("TERM", "xterm-256color"), new process::EnvironmentEntry("NO_COLOR", noColor ? "1" : ""), new process::EnvironmentEntry("NERI_CACHE_DIR", cache)]
+  else
+    options.environment = [new process::EnvironmentEntry("TERM", "xterm-256color"), new process::EnvironmentEntry("NO_COLOR", noColor ? "1" : "")]
+  end
+  let input = buffers::ByteBuffer.create(16384)
+
+  if input == null
+    distribution::fail("Cannot allocate test input")
+    return ""
+  end
+  if terminal
+    for text in [":he\t\n", "Close suggestions", "console::printl\t\"tab-output\"\n", "\r\ntab-output\r\n", "let uniqueNumber = 123\n", "uniqueNumber: Int", "uniqueN\t\n", "=> 123",
+      "2+2", "~2+2", "\n", "=> 4",
+      "12.5+0.5", "~12.5+0.5", "\n", "=> 13",
+      "2+", "~2+", "2", "~2", "\n", "=> 4",
+      "let number2value = 77\n", "number2value: Int", "number2v", "@Up/Down select", "\n", "@number2value", "\n", "=> 77",
+      "app.hand\tnew sumi::Request(\"GET\", \"/\")" + rightKeys("C") + ".status\n", "=> 200",
+      "use buff\t\n", "sumi> ",
+      "console::println(\"á水\" + uniqueNumXYZ as String)" + leftKeys(14) + "\t\n", "\r\ná水123\r\n",
+      "def uniqueDouble(value: Int): Int\n", " ...> ", "return value * 2\n", " ...> ", "end\n", "sumi> ", "uniqueD\t6\n", "=> 12",
+      "class CompletionCounter\n", " ...> ", "public value: Int = 100\n", " ...> ", "def bump(): Int\n", " ...> ", "this.value = this.value + 1\n", " ...> ", "return this.value\n", " ...> ", "end\n", " ...> ", "end\n", "sumi> ",
+      "let meter = new CompletionCounter()\n", "meter: CompletionCounter", "meter.bu\t\n", "=> 101", "meter.val\t\n", "=> 101",
+      "def pendingDouble(): Int\n", " ...> ", "return uniqueD\t7\n", " ...> ", "end\n", "sumi> ", "pendingDouble()\n", "=> 14",
+      "console::", "@Up/Down select", "printl\t\"ambiguous-output\"\n", "\r\nambiguous-output\r\n",
+      "app.hand", "@Up/Down select", "\n", "@app.handle()", "new sumi::Request(\"GET\", \"/\")" + rightKeys("C") + ".status\n", "=> 200",
+      "let pickerAlpha = 10\n", "pickerAlpha: Int", "let pickerBeta = 20\n", "pickerBeta: Int",
+      "picker", "@Up/Down select", escapeKey(21) + "2+2", "~2+2", "\n", "=> 4",
+      "picker", "@Up/Down select", rightKeys("B"), "@Up/Down select", "\n", "@sumi> picker", "\n", "=> ",
+      "picker", "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("A"), "@Up/Down select", "\t", "@sumi> picker", "\n", "=> ",
+      "picker", "@Up/Down select", escapeKey(), "@sumi> picker", escapeKey(21) + "1+1\n", "=> 2",
+      "meter.bu", "@Up/Down select", "\n", "@meter.bump()", "\n", "=> 102", "meter.value\n", "=> 102",
+      "console::printl(\"existing-call\")" + leftKeys(17) + "\t\n", "\r\nexisting-call\r\n",
+      "console::println\t\"exact-call\"\n", "\r\nexact-call\r\n",
+      "let scrollOne = 1\n", "scrollOne: Int", "let scrollTwo = 2\n", "scrollTwo: Int", "let scrollThree = 3\n", "scrollThree: Int", "let scrollFour = 4\n", "scrollFour: Int", "let scrollFive = 5\n", "scrollFive: Int",
+      "scroll", "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", rightKeys("B"), "@Up/Down select", "\t", "@sumi> scroll", "\n", "=> ",
+      "let failedCompletion = missingCompletionName\n", "missingCompletionName", "failedCompl\t\n", "Undefined name 'failedCompl'",
+      ":re\t\n", "App reinitialized", "uniqueN\t\n", "Undefined name 'uniqueN'", "meter\t\n", "Undefined name 'meter'", ":ex\t\n", ""]
+      frame(input, text)
+    end
+  else
+    let appended = input.appendText("let uniqueNumber = 123\nuniqueNumber\n:exit\n")
+  end
+  options.input = input.snapshot()
+  let outcome = runConsoleScenario(options)
+
+  distribution::operation(files::removeTree(cache)) if cache != ""
+  match outcome
+    case result::Result.Ok(output)
+      let status = output.exit
+      let text = host::stringFromBytes(output.stdout)
+
+      if text == null
+        distribution::fail("Invalid console output")
+        return ""
+      end
+      let errors = host::stringFromBytes(output.stderr)
+      var transcript = text
+
+      if errors != null
+        transcript = transcript + errors
+      end
+      require(status != null && status.value() == 0, "Console failed", transcript)
+      if terminal
+        let screen = new ConsoleScreen()
+
+        screen.consume(text)
+        require(!screen.duplicatePrompt, "Completion must not draw a second prompt on the same visible line", text)
+        require(screen.maxScrollItems == 3, "The menu shows at most three entries while scrolling through five", text)
+        for name in ["scrollOne", "scrollTwo", "scrollThree", "scrollFour", "scrollFive"]
+          require(contains(text, "> " + name), "Every entry remains selectable beyond the visible window", text)
+        end
+      end
+      return text
+    case result::Result.Error(failure)
+      distribution::fail("Console UI test: " + failure.code)
+      return ""
+  end
+end
+
+def main(): Void
+  let cli = host::argumentAt(0)
+  let project = host::argumentAt(1)
+  let driver = host::argumentAt(2)
+  let escape = host::stringFromBytes([27 as Byte])
+
+  if cli == null || project == null || driver == null || escape == null
+    distribution::fail("Usage: console-ui-contracts <installed-sumi> <project> <pty-driver>")
+    return
+  end
+  let duplicate = new ConsoleScreen()
+  let repainted = new ConsoleScreen()
+
+  duplicate.consume("sumi> " + escape + "[7Gsumi> console::println()")
+  repainted.consume("sumi> " + escape + "[1G" + escape + "[2Ksumi> console::println()")
+  require(duplicate.duplicatePrompt && !repainted.duplicatePrompt, "Screen observer distinguishes a duplicate prompt from a redraw", "")
+  let colored = exercise(cli, project, driver, true, false)
+
+  require(contains(colored, "=> 123"), "Tab completes a live binding", colored)
+  require(contains(colored, escape + "[36m=> 123") && contains(colored, escape + "[36msumi>"), "One accent distinguishes console interaction", colored)
+  require(contains(colored, escape + "[31merror" + escape + "[0m: "), "Only the error label is red; the diagnostic retains normal contrast", colored)
+  require(contains(colored, escape + "[7m> "), "The selected suggestion has a highlight and text marker", colored)
+  for style in ["2", "32", "33", "34", "35", "1;35", "1;36"]
+    require(!contains(colored, escape + "[" + style + "m"), "No dim text or unrelated palette colors", colored)
+  end
+  require(!contains(colored, escape + "[?1049h"), "Completion keeps the main terminal screen and scrollback", colored)
+  require(contains(colored, "> pickerAlpha") && contains(colored, "> pickerBeta") && contains(colored, "=> 10") && contains(colored, "=> 20"), "Arrow selection changes the inserted candidate without depending on Neri ordering", colored)
+  require(contains(colored, "App reinitialized"), "Tab completes :reset", colored)
+  require(contains(colored, "Undefined name 'uniqueN'"), "Reset removes old completion names", colored)
+  let plain = exercise(cli, project, driver, true, true)
+
+  require(contains(plain, "=> 123") && contains(plain, "error: ") && contains(plain, "> pickerAlpha"), "NO_COLOR retains results, errors and the selection marker", plain)
+  for style in ["0", "1", "7", "31", "36"]
+    require(!contains(plain, escape + "[" + style + "m"), "NO_COLOR preserves editing and completion without SGR styling", plain)
+  end
+  let redirected = exercise(cli, project, driver, false, false)
+
+  require(contains(redirected, "=> 123") && !contains(redirected, escape), "Redirected output stays plain", redirected)
+  console::println("Sumi console colors, completion, reset and redirected output contracts passed")
+end

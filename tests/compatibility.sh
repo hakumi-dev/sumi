@@ -24,3 +24,19 @@ fi
 grep -qF 'NR_FIXTURE: unit selection is unavailable' "$SUMI_WORK/report"
 grep -qF 'SUMI_COMPAT_BUILD: Cannot build unit contracts.' "$SUMI_WORK/report"
 printf 'Sumi compatibility rejection contract passed\n'
+
+source "$SUMI_ROOT/scripts/prerequisites.sh"
+mkdir "$SUMI_WORK/tools"
+if (PATH="$SUMI_WORK/tools"; require_test_prerequisites) > "$SUMI_WORK/report" 2>&1; then
+  printf 'Missing curl was accepted\n' >&2
+  exit 1
+fi
+grep -qF 'SUMI_PREREQUISITE: Missing curl.' "$SUMI_WORK/report"
+ln -s "$(command -v curl)" "$SUMI_WORK/tools/curl"
+ln -s "$(command -v script)" "$SUMI_WORK/tools/script"
+if (PATH="$SUMI_WORK/tools"; require_test_prerequisites) > "$SUMI_WORK/report" 2>&1; then
+  printf 'Missing timeout was accepted\n' >&2
+  exit 1
+fi
+grep -qF 'SUMI_PREREQUISITE: Missing timeout/gtimeout.' "$SUMI_WORK/report"
+printf 'Sumi prerequisite rejection contracts passed\n'

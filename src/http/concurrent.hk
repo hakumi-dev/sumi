@@ -1,0 +1,425 @@
+use arrays
+use host
+use resources
+use result
+use sumi
+use workers
+namespace sumiweb
+
+# Neri validates the named entry and creates its native adapter. The explicit
+# bridge keeps server policy in Sumi and heap/thread primitives in Neri.
+@operation("workers.start", serveConcurrentNative)
+def serveConcurrent(entry: fn(Byte[]): Void, config: Byte[], address: String, options: ConcurrentOptions): ServerError?
+end
+
+unsafe def serveConcurrentNative(entry: cabi fn(Byte*, UInt64): Void, config: Byte[], address: String, options: ConcurrentOptions): ServerError?
+  if levelRank(options.minimumLevel) < 0
+    return new ServerError("SUMI_LOG_LEVEL", "Log level must be debug, info, warning, error, or off")
+  end
+  if options.workerCount < 1 || options.workerCount > 64 || options.maxConnections < 1 || options.maxConnections > 1024 || options.maxOutstanding < 1 || options.maxOutstanding > options.maxConnections || options.maxReservedBytes < 2228224 || options.maxReservedBytes > 1073741824
+    return new ServerError("SUMI_CONCURRENCY_OPTIONS", "Workers must be 1..64, connections 1..1024, outstanding jobs 1..connections, and reserved bytes 2228224..1073741824")
+  end
+  if options.startupTimeoutMilliseconds < 1 || options.startupTimeoutMilliseconds > 60000
+    return new ServerError("SUMI_CONCURRENCY_OPTIONS", "Startup timeout must be 1..60000 milliseconds")
+  end
+  if host::stringByteLength(address) < 11 || host::stringSlice(address, 0, 10) != "127.0.0.1:"
+    return new ServerError("SUMI_LISTEN_ADDRESS", "Address must be 127.0.0.1:<port>")
+  end
+  let port = host::parseInt(host::stringSlice(address, 10, host::stringByteLength(address) - 10))
+
+  if port == null || port < 1 || port > 65535
+    return new ServerError("SUMI_LISTEN_PORT", "Port must be an integer from 1 to 65535")
+  end
+  let capacity = options.maxConnections
+  let polling = http::PollSet.create(capacity + 2)
+
+  if polling == null
+    return new ServerError("SUMI_CONCURRENCY_OPTIONS", "Cannot create the bounded socket polling set")
+  end
+  let jobs = new ConcurrentJobs(capacity)
+  let readBuffer: Byte[] = arrays::generate(16384) do |index|
+    return 0 as Byte
+  end
+  let poolOptions = new workers::Options()
+
+  poolOptions.workers = options.workerCount
+  poolOptions.maxOutstanding = options.maxOutstanding
+  poolOptions.maxInputBytes = 1114112
+  poolOptions.maxOutputBytes = 1114112
+  poolOptions.maxReservedBytes = options.maxReservedBytes
+  let outcome = serveConcurrentScoped(entry, config, address, port, options, capacity, poolOptions, polling, jobs, readBuffer)
+  var error: ServerError? = null
+
+  match outcome.completion
+    case resources::Completion.Value(value)
+      error = value
+    case resources::Completion.Failure(failure)
+      error = new ServerError("SUMI_CONCURRENT_START", "Cannot establish concurrent server resources")
+      if failure != null
+        error = new ServerError("SUMI_CONCURRENT_START", failureDetail(failure))
+      end
+  end
+  if outcome.closeFailures.count() > 0
+    let closed = new ServerError("SUMI_CONCURRENT_CLOSE", "Close concurrent server resources")
+
+    outcome.closeFailures.each() do |failure|
+      closed.message = closed.message + "; " + failureDetail(failure)
+    end
+    error = preservePrimary(error, closed)
+  end
+  return error
+end
+
+unsafe def serveConcurrentScoped(entry: cabi fn(Byte*, UInt64): Void, config: Byte[], address: String, port: Int, options: ConcurrentOptions, capacity: Int, poolOptions: workers::Options, polling: http::PollSet, jobs: ConcurrentJobs, readBuffer: Byte[]): resources::Outcome<ServerError?, result::Failure>
+  var stop = new http::Stop()
+  let configuredStop = options.stop
+
+  stop = configuredStop if configuredStop != null
+  using lifetime <- http::Lifetime.open(options.handleInterrupts, options.forceExitAfterStopMilliseconds, stop)
+    if lifetime.isStopping()
+      return null
+    end
+    using startupWatch <- http::Lifetime.open(false, options.startupTimeoutMilliseconds)
+      startupWatch.requestStop()
+      using pool <- workers::startNative(entry, config, poolOptions)
+        if lifetime.isStopping()
+          return null
+        end
+        using acquisition <- ServerAcquisition.open(stop)
+          let notification = try pool.readinessHandle()
+
+          using sockets <- ServerSockets.open(port, capacity)
+            var primary: ServerError? = null
+            var draining = false
+            var aborting = false
+            var workersStopped = false
+            let onListening = options.onListening
+
+            onListening(address) if onListening != null
+            acquisition.disarm()
+            primary = preserveCloseFailure(primary, startupWatch.close())
+            while !aborting
+              let now = http::netMilliseconds()
+
+              if now < 0
+                primary = preservePrimary(primary, new ServerError("SUMI_CLOCK", "Cannot read the monotonic server clock"))
+                break
+              end
+              lifetime.requestStop() if primary != null
+              if lifetime.isStopping() && !draining
+                draining = true
+                primary = preserveCloseFailure(primary, sockets.stopListening())
+              end
+              # Finite completion batches leave time for reads, writes and signals.
+              var completed = 0
+              var empty = false
+
+              while completed < poolOptions.maxOutstanding && !empty && !workersStopped
+                match pool.poll(0)
+                  case result::Result.Error(failure)
+                    primary = preservePrimary(primary, new ServerError("SUMI_WORKER_POLL", failureDetail(failure)))
+                    aborting = true
+                    empty = true
+                  case result::Result.Ok(polled)
+                    match polled
+                      case workers::Poll.Empty()
+                        empty = true
+                      case workers::Poll.Stopped()
+                        workersStopped = true
+                        primary = preservePrimary(primary, new ServerError("SUMI_WORKERS_STOPPED", "The worker pool stopped before the server drained"))
+                        lifetime.requestStop()
+                        empty = true
+                      case workers::Poll.Completed(completion)
+                        let slot = jobs.take(completion.ticket.id())
+
+                        if slot == null
+                          primary = preservePrimary(primary, new ServerError("SUMI_WORKER_PROTOCOL", "Completion has no admitted connection"))
+                          aborting = true
+                          empty = true
+                        else
+                          let connection = sockets.at(slot)
+
+                          if connection == null || !connection.isWorking()
+                            primary = preservePrimary(primary, new ServerError("SUMI_WORKER_PROTOCOL", "Completion targets an inactive connection"))
+                            aborting = true
+                            empty = true
+                          else
+                            match completion.outcome
+                              case workers::Outcome.Success(bytes)
+                                let reply = decodeWorkerReply(bytes)
+
+                                if reply == null || reply.event.requestId != connection.requestId || reply.event.method != connection.event.method
+                                  setConnectionFailure(connection, 500, "SUMI_WORKER_PROTOCOL", "Worker returned an invalid response packet")
+                                  primary = preservePrimary(primary, new ServerError("SUMI_WORKER_PROTOCOL", "Worker returned an invalid response packet"))
+                                  lifetime.requestStop()
+                                else
+                                  applyWorkerReply(connection, reply)
+                                end
+                              case workers::Outcome.Failed()
+                                setConnectionFailure(connection, 500, "SUMI_WORKER_FAILED", "Application worker failed")
+                                primary = preservePrimary(primary, new ServerError("SUMI_WORKER_FAILED", "Application worker failed"))
+                                lifetime.requestStop()
+                              case workers::Outcome.Cancelled()
+                                setConnectionFailure(connection, 503, "SUMI_WORKER_CANCELLED", "Application work was cancelled")
+                            end
+                          end
+                        end
+                        completed = completed + 1
+                    end
+                end
+              end
+              if aborting
+                break
+              end
+
+              var index = 0
+
+              while index < capacity && !aborting
+                let connection = sockets.at(index)
+
+                if connection != null
+                  if lifetime.isStopping() && (connection.isReading() || connection.isReady())
+                    reportStoppedRequest(options, connection.event, connection.startedAt)
+                    primary = preserveCloseFailure(primary, sockets.remove(index))
+                  else
+                    # Poll flags belong to the previous wait; advance also checks
+                    # absolute deadlines when no readiness was reported.
+                    let connectionNow = http::netMilliseconds()
+
+                    if connectionNow < 0
+                      primary = preservePrimary(primary, new ServerError("SUMI_CLOCK", "Cannot read the monotonic server clock"))
+                      aborting = true
+                      break
+                    end
+                    connection.advance(polling, readBuffer, connectionNow)
+                    if connection.isReady()
+                      let incoming = connection.incoming
+
+                      if incoming == null
+                        setConnectionFailure(connection, 500, "SUMI_HTTP_STATE", "Request framing completed without a result")
+                      else
+                        let request = incoming.request
+
+                        if request == null
+                          setConnectionFailure(connection, incoming.status, "SUMI_HTTP_" + (incoming.status as String), rejection(incoming.status), incoming.head)
+                        else
+                          request.requestId = connection.requestId
+                          connection.event.method = request.method
+                          connection.event.path = request.path
+                          let dispatching = new LogEvent("http.request.dispatching")
+
+                          dispatching.level = "debug"
+                          dispatching.requestId = connection.requestId
+                          dispatching.method = request.method
+                          emit(options, dispatching)
+                          if lifetime.isStopping()
+                            reportStoppedRequest(options, connection.event, connection.startedAt)
+                            primary = preserveCloseFailure(primary, sockets.remove(index))
+                          else
+                            let packet = encodeWorkerRequest(request)
+
+                            if packet == null
+                              setConnectionFailure(connection, 500, "SUMI_WORKER_PROTOCOL", "Request exceeds the worker message budget")
+                            else
+                              match pool.submit(packet)
+                                case result::Result.Ok(ticket)
+                                  if !jobs.add(ticket.id(), index)
+                                    primary = preservePrimary(primary, new ServerError("SUMI_WORKER_PROTOCOL", "Cannot index an admitted job"))
+                                    aborting = true
+                                  else
+                                    connection.markWorking(ticket)
+                                  end
+                                case result::Result.Error(failure)
+                                  if failure.code == "full"
+                                    setConnectionFailure(connection, 503, "SUMI_SERVER_BUSY", "Application work queue is full")
+                                  else
+                                    setConnectionFailure(connection, 503, "SUMI_WORKER_ADMISSION", "Application work could not be admitted")
+                                    primary = preservePrimary(primary, new ServerError("SUMI_WORKER_ADMISSION", failureDetail(failure)))
+                                    lifetime.requestStop()
+                                  end
+                              end
+                            end
+                          end
+                        end
+                      end
+                    end
+                    if connection.isFinished() && sockets.at(index) != null
+                      emit(options, connection.event)
+                      primary = preserveCloseFailure(primary, sockets.remove(index))
+                    end
+                  end
+                end
+                index = index + 1
+              end
+              if aborting
+                break
+              end
+              lifetime.requestStop() if primary != null
+              if lifetime.isStopping() && !draining
+                continue
+              end
+              if draining && jobs.count() == 0 && sockets.count() == 0
+                break
+              end
+
+              polling.clear()
+              var listenerSlot: Int? = null
+
+              if !draining && sockets.hasCapacity()
+                listenerSlot = polling.add(sockets.listenerHandle())
+                if listenerSlot == null
+                  primary = preservePrimary(primary, new ServerError("SUMI_POLL_SET", "Cannot register the listener"))
+                  break
+                end
+              end
+              var workerSlot: Int? = null
+
+              if !workersStopped
+                workerSlot = polling.add(notification)
+                if workerSlot == null
+                  primary = preservePrimary(primary, new ServerError("SUMI_POLL_SET", "Cannot register worker notifications"))
+                  break
+                end
+              end
+              var timeout = lifetime.pollMilliseconds()
+              let calculatedAt = http::netMilliseconds()
+
+              if calculatedAt < 0
+                primary = preservePrimary(primary, new ServerError("SUMI_CLOCK", "Cannot read the monotonic server clock"))
+                break
+              end
+
+              index = 0
+              while index < capacity
+                let connection = sockets.at(index)
+
+                if connection != null
+                  if !connection.register(polling)
+                    primary = preservePrimary(primary, new ServerError("SUMI_POLL_SET", "Cannot register a connection"))
+                    aborting = true
+                  end
+                  let remaining = connection.deadline(calculatedAt)
+
+                  if remaining != null && (timeout < 0 || remaining < timeout)
+                    timeout = remaining
+                  end
+                end
+                index = index + 1
+              end
+              if aborting
+                break
+              end
+              let beforeWait = http::netMilliseconds()
+
+              if beforeWait < calculatedAt
+                primary = preservePrimary(primary, new ServerError("SUMI_CLOCK", "Cannot read the monotonic server clock"))
+                break
+              end
+              if timeout >= 0
+                timeout = timeout - (beforeWait - calculatedAt)
+                timeout = 0 if timeout < 0
+              end
+              match polling.wait(timeout)
+                case result::Result.Error(failure)
+                  primary = preservePrimary(primary, new ServerError("SUMI_LISTEN_POLL", failureDetail(failure)))
+                  break
+                case result::Result.Ok(ready)
+              end
+              if workerSlot != null
+                if polling.failed(workerSlot) || polling.hungUp(workerSlot) || polling.invalid(workerSlot)
+                  primary = preservePrimary(primary, new ServerError("SUMI_WORKER_POLL", "Worker notification descriptor failed"))
+                  break
+                end
+              end
+              if listenerSlot != null && !lifetime.isStopping()
+                if polling.failed(listenerSlot) || polling.hungUp(listenerSlot) || polling.invalid(listenerSlot)
+                  primary = preservePrimary(primary, new ServerError("SUMI_LISTEN_POLL", "Listening socket failed"))
+                  break
+                end
+                if polling.readable(listenerSlot)
+                  let acceptedAt = http::netMilliseconds()
+
+                  if acceptedAt < 0
+                    primary = preservePrimary(primary, new ServerError("SUMI_CLOCK", "Cannot read the monotonic server clock"))
+                    break
+                  end
+                  match sockets.accept(acceptedAt)
+                    case result::Result.Error(failure)
+                      primary = preservePrimary(primary, new ServerError("SUMI_LISTEN_ACCEPT", failureDetail(failure)))
+                      break
+                    case result::Result.Ok(connection)
+                      if connection != null
+                        let started = new LogEvent("http.request.started")
+
+                        started.requestId = connection.requestId
+                        emit(options, started)
+                      end
+                  end
+                end
+              end
+            end
+            # The deadline watcher remains alive until sockets, worker entries and
+            # application cleanup have finished. Stop never terminates a thread.
+            lifetime.requestStop()
+            polling.clear()
+            primary = preserveCloseFailure(primary, sockets.close())
+            match pool.stop()
+              case result::Result.Error(failure)
+                primary = preservePrimary(primary, new ServerError("SUMI_WORKER_STOP", failureDetail(failure)))
+              case result::Result.Ok(stopped)
+            end
+            primary = preserveCloseFailure(primary, pool.close())
+            let onShutdown = options.onShutdown
+
+            onShutdown() if onShutdown != null
+            return primary
+          end
+        end
+      end
+    end
+  end
+  return null
+end
+
+def failureDetail(failure: result::Failure): String
+  var detail = failure.operation + ": " + failure.code + (failure.detail == "" ? "" : ": " + failure.detail)
+  var close = failure.closeFailure
+
+  while close != null
+    detail = detail + "; close " + close.operation + ": " + close.code + (close.detail == "" ? "" : ": " + close.detail)
+    close = close.closeFailure
+  end
+  return detail
+end
+
+def preserveCloseFailure(primary: ServerError?, failure: result::Failure?): ServerError?
+  if failure == null
+    return primary
+  end
+  return preservePrimary(primary, new ServerError("SUMI_CONCURRENT_CLOSE", failureDetail(failure)))
+end
+
+def setConnectionFailure(connection: ConcurrentConnection, status: Int, code: String, message: String, head: Bool = false): Void
+  connection.event.code = code
+  connection.event.message = message
+  connection.event.level = status >= 500 ? "error" : "warning"
+  let response = sumi::text(status == 503 ? "Service Unavailable" : "Request rejected", status)
+
+  response.headers.add("Retry-After", "1") if status == 503
+  let output = wire(response, head || connection.event.method == "HEAD", connection.requestId)
+
+  unsafe
+    connection.setOutput(output, http::netMilliseconds())
+  end
+end
+
+def applyWorkerReply(connection: ConcurrentConnection, reply: WorkerReply): Void
+  connection.event.level = reply.event.level
+  connection.event.route = reply.event.route
+  connection.event.code = reply.event.code
+  connection.event.message = reply.event.message
+  connection.event.appMs = reply.event.appMs
+  unsafe
+    connection.setOutput(reply.response, http::netMilliseconds())
+  end
+end

@@ -1,0 +1,94 @@
+use sumi
+use sumiweb
+use http
+use host
+use clock
+use console
+
+@cabiImport("getpid")
+unsafe def processId(): Int32
+end
+
+@cabiImport("kill")
+unsafe def sendSignal(pid: Int32, signal: Int32): Int32
+end
+
+def spin(milliseconds: Int): Void
+  let started = clock::milliseconds()
+
+  if started == null
+    return
+  end
+  while true
+    let now = clock::milliseconds()
+
+    if now == null || now - started >= milliseconds
+      return
+    end
+  end
+end
+
+def main(): Void
+  let port = host::environment("PORT")
+  let mode = host::environment("MODE")
+
+  if port == null || mode == null
+    host::exit(2)
+    return
+  end
+  let app = new sumi::App()
+  let stop = new http::Stop()
+
+  app.get("/stop") do |request|
+    console::println("HANDLER_STOP")
+    stop.request()
+    return sumi::text("stopping")
+  end
+  app.get("/slow") do |request|
+    console::println("HANDLER_START")
+    spin(400)
+    console::println("HANDLER_END")
+    return sumi::text("finished")
+  end
+  app.get("/probe") do |request|
+    console::println("HANDLER_PROBE")
+    return sumi::text("probe")
+  end
+  let options = new sumiweb::Options()
+
+  options.stop = stop
+  options.forceExitAfterStopMilliseconds = mode == "deadline" ? 150 : 30000
+  if mode == "invalid-budget"
+    options.forceExitAfterStopMilliseconds = 0
+  end
+  stop.request() if mode == "prestopped"
+  options.onListening = fn(address)
+    console::println("READY")
+  end
+  if mode == "signal-on-dispatch"
+    options.minimumLevel = "debug"
+    options.log = fn(event)
+      if event.event == "http.request.dispatching"
+        console::println("DISPATCH_SIGNAL")
+        unsafe
+          if sendSignal(processId(), 15 as Int32) != 0 as Int32
+            host::exit(2)
+          end
+        end
+      end
+    end
+  end
+  options.onShutdown = fn()
+    console::println("SHUTDOWN_START")
+    spin(mode == "deadline" ? 5000 : 300)
+    console::println("SHUTDOWN_END")
+  end
+  let error = sumiweb::serve(app, "127.0.0.1:" + port, options)
+
+  if error != null
+    console::println(error.code + ": " + error.message)
+    host::exit(1)
+    return
+  end
+  console::println("EXIT_NORMAL")
+end

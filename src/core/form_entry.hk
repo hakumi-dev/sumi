@@ -1,0 +1,12 @@
+namespace sumi
+
+internal class FormEntry
+  public name: String
+  public value: String
+  public next: FormEntry?
+
+  def init(name: String, value: String): Void
+    this.name = name
+    this.value = value
+  end
+end

@@ -1,0 +1,11 @@
+namespace sumiweb
+
+class WorkerReply
+  public response: WireResponse
+  public event: LogEvent
+
+  def init(response: WireResponse, event: LogEvent): Void
+    this.response = response
+    this.event = event
+  end
+end

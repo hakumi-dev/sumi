@@ -1,0 +1,158 @@
+use host
+use console
+use clock
+
+def consoleElapsed(start: Int?): String
+  let finish = clock::milliseconds()
+
+  if start != null && finish != null
+    return ((finish - start) as String) + "ms"
+  end
+  return "n/a"
+end
+
+def initializeApp(session: ExecutableSession, project: String, unit: String): Bool
+  let start = clock::milliseconds()
+  let interactive = startupInteractive()
+  var progress: (fn(String, Int, Int): Void)? = null
+  var nativeProgress: (fn(String, Int, Int, String): Void)? = null
+
+  if interactive
+    progress = fn(phase: String, projectSources: Int, librarySources: Int): Void
+      startupProgress(phase, projectSources, librarySources)
+    end
+    nativeProgress = fn(phase: String, completed: Int, total: Int, detail: String): Void
+      startupNativeProgress(phase, completed, total, detail)
+    end
+  end
+  let initialized = session.initializeProject(project, unit, "consoleApp", "app", "use sumi\nuse console\n", progress, nativeProgress)
+
+  clearStartupProgress()
+  let timings = host::environment("SUMI_CONSOLE_TIMINGS")
+
+  if timings != null && timings != ""
+    console::println("startup initializer=" + consoleElapsed(start))
+  end
+  if !initialized.succeeded()
+    console::println(consoleError("SUMI_CONSOLE_INIT: " + initialized.message))
+    return false
+  end
+  return true
+end
+
+def showSubmission(session: ExecutableSession, prepared: PreparedSubmission): Void
+  let execution = prepared.status.isComplete() ? session.execute(prepared) : new SessionExecutionResult(SessionExecutionStatus.invokeState(), prepared.status.name())
+  let response = new SessionResponse(prepared, execution)
+
+
+  if execution.succeeded() && execution.resultType != "Void"
+    console::println(consoleColor("=> " + execution.resultText, "36"))
+  else
+    let text = response.format()
+
+    if text != "ok"
+      console::println(execution.succeeded() ? text : consoleError(text))
+    end
+  end
+end
+
+def main(): Void
+  let project = host::argumentAt(0)
+  let unit = host::argumentAt(1)
+  let compiler = host::environment("NERI_SESSION_COMPILER")
+  let linker = host::environment("NERI_LINKER")
+  let target = host::environment("NERI_TARGET")
+  let work = host::environment("NERI_SESSION_WORK")
+
+  if project == null || unit == null || compiler == null || linker == null || target == null || work == null
+    console::println(consoleError("SUMI_CONSOLE_SETUP: Use sumi console inside an application"))
+    host::exit(1)
+    return
+  end
+  let platform = TargetPlatform.parse(target)
+
+  if platform == null
+    console::println(consoleError("SUMI_CONSOLE_SETUP: NERI_TARGET must name a supported native target"))
+    host::exit(1)
+    return
+  end
+  let session = new ExecutableSession(new SessionToolchain(compiler, linker, platform, work))
+
+  if !initializeApp(session, project, unit)
+    session.dispose()
+    host::exit(1)
+    return
+  end
+  console::println(consoleColor("Sumi console", "1") + " · :help")
+  initializeConsoleInput()
+  let menu = new ConsoleCompletionMenu()
+  var source = ""
+
+  while true
+    let input = readConsoleLine(consoleColor(source == "" ? "sumi> " : " ...> ", "36", true))
+    let first = input.text
+
+    if input.completion
+      completeConsoleLine(session, source, input, menu)
+      continue
+    end
+    menu.close()
+    if input.eof || first == ":exit"
+      if source != ""
+        console::println("Unfinished input discarded")
+      end
+      session.dispose()
+      return
+    end
+    if input.error != ""
+      console::println(consoleError("SUMI_CONSOLE_INPUT: " + input.error))
+      source = ""
+    else if first == ":reset"
+      source = ""
+      let reset = session.reset()
+
+      if !reset.succeeded() || !initializeApp(session, project, unit)
+        session.dispose()
+        host::exit(1)
+        return
+      end
+      console::println("App reinitialized")
+    else if first == ":cancel"
+      source = ""
+      console::println("Input cleared")
+    else if first == ":help"
+      console::println(consoleColor("Commands", "1"))
+      console::println("  :help     Show help")
+      console::println("  :cancel   Discard pending input")
+      console::println("  :reset    Restart app; clear variables")
+      console::println("  :exit     Exit console")
+      console::println("")
+      console::println(consoleColor("Keys", "1"))
+      console::println("  Enter     Evaluate / insert selected suggestion")
+      console::println("  Tab       Complete / insert selected suggestion")
+      console::println("  Up/Down   History / select suggestion")
+      console::println("  Esc       Close suggestions")
+    else
+      if first != "." && (first != "" || source != "")
+        source = source + first + "\n"
+      end
+      if source != ""
+        let start = clock::milliseconds()
+        let prepared = session.prepare(source)
+        let preparationTime = consoleElapsed(start)
+
+        if !prepared.status.isIncomplete() || first == "."
+          let executionStart = clock::milliseconds()
+
+          showSubmission(session, prepared)
+          let timings = host::environment("SUMI_CONSOLE_TIMINGS")
+
+          if timings != null && timings != ""
+            console::println("prepare=" + preparationTime + " execute=" + consoleElapsed(executionStart) + " context=app")
+          end
+          source = ""
+        end
+      end
+    end
+  end
+end

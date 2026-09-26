@@ -1,0 +1,90 @@
+use sumi
+use json
+use result
+use text
+use test
+
+def request(contentType: String, body: String): sumi::Request
+  let value = new sumi::Request("POST", "/")
+
+  value.contentType = contentType
+  value.body = text::bytes(body)
+  return value
+end
+
+def reject(contentType: String, body: String, code: String): Void
+  match request(contentType, body).json()
+    case result::Result.Ok(value)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, code)
+  end
+end
+
+def invalidBytes(bytes: Byte[], offset: Int): Void
+  let invalid = request("application/json", "")
+
+  invalid.body = bytes
+  match invalid.json()
+    case result::Result.Ok(value)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, "invalid_utf8")
+      test::assertEqual(failure.offset, offset)
+  end
+  match invalid.text()
+    case result::Result.Ok(value)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, "invalid_utf8")
+      test::assertEqual(failure.offset, offset)
+  end
+end
+
+def main(): Void
+  for contentType in ["application/json", "APPLICATION/JSON; Charset=\"UTF-8\"", "application/problem+json", " application/json ; ;profile=\"quoted;value\";charset=\"utf\\-8\"; "]
+    match request(contentType, "{\"total\":9007199254740993}").json()
+      case result::Result.Ok(value)
+        let total = value.get("total")
+
+        test::assertTrue(total != null)
+        if total != null
+          test::assertTrue(total.text() == "9007199254740993")
+        end
+      case result::Result.Error(failure)
+        test::assertTrue(false)
+    end
+  end
+  reject("", "{}", "unsupported_media_type")
+  reject("text/plain", "{}", "unsupported_media_type")
+  reject("application/json; charset=latin1", "{}", "unsupported_charset")
+  reject("application/json; charset=utf-8; CHARSET=utf-8", "{}", "invalid_content_type")
+  reject("application/json; charset =utf-8", "{}", "invalid_content_type")
+  reject("application/json; charset=\"utf-8", "{}", "invalid_content_type")
+  reject("application/json; charset=\"utf-8\"junk", "{}", "invalid_content_type")
+  reject("application/json", "{\"a\":1,\"a\":2}", "duplicate_key")
+  invalidBytes([255 as Byte], 0)
+  invalidBytes([34 as Byte, 65 as Byte, 255 as Byte, 34 as Byte], 2)
+  invalidBytes([34 as Byte, 65 as Byte, 226 as Byte, 130 as Byte], 2)
+  let options = new json::Options()
+
+  options.maxOutputBytes = 2000000
+  match sumi::json(json::Value.boolean(true), 201, options)
+    case result::Result.Ok(response)
+      test::assertEqual(response.status, 201)
+      test::assertEqual(response.contentType, "application/json")
+      test::assertTrue(text::fromBytes(response.body) == "true")
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+  end
+
+  test::assertEqual(options.maxOutputBytes, 2000000)
+
+  options.maxOutputBytes = 3
+  match sumi::json(json::Value.boolean(true), options: options)
+    case result::Result.Ok(value)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, "output_limit")
+  end
+end

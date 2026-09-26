@@ -1,0 +1,203 @@
+use buffers
+use host
+use console
+use tasks
+
+@library("edit")
+@cabiImport("sumi_console_initialize")
+unsafe def consoleInitialize(): Void
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_terminal")
+unsafe def consoleTerminal(): Int
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_cursor")
+unsafe def consoleCursor(): Int
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_event")
+unsafe def consoleEvent(): Int
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_refresh")
+unsafe def consoleRefresh(): Void
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_menu")
+unsafe def consoleMenu(text: Byte*, length: Int): Int
+end
+
+def showConsoleMenu(text: String): Void
+  let data = buffers::ByteBuffer.create(65536)
+
+  if data == null || !data.appendText(text)
+    return
+  end
+  let bytes = data.snapshot()
+
+  unsafe
+    borrow bytes as pointer
+      let shown = consoleMenu(pointer, bytes.Length)
+    end
+  end
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_replace")
+unsafe def consoleReplace(text: Byte*, length: Int, cursor: Int): Int
+end
+
+def replaceConsoleLine(text: String, cursor: Int): Void
+  let data = buffers::ByteBuffer.create(1048576)
+
+  if data == null || !data.appendText(text)
+    return
+  end
+  let bytes = data.snapshot()
+
+  unsafe
+    borrow bytes as pointer
+      let replaced = consoleReplace(pointer, bytes.Length, cursor)
+    end
+  end
+end
+
+@library("sumi-console-input")
+@cabiImport("sumi_console_readline")
+unsafe def consoleEdit(prompt: Byte*, promptLength: Int, output: Byte*, capacity: Int): Int
+end
+
+def initializeConsoleInput(): Void
+  unsafe
+    consoleInitialize()
+  end
+end
+
+def editedConsoleLine(prompt: String): ConsoleLine
+  let result = new ConsoleLine()
+  let label = buffers::ByteBuffer.create(4096)
+  let bytes = buffers::ByteBuffer.create(1048576)
+
+  if label == null || bytes == null || !label.appendText(prompt)
+    result.error = "Cannot allocate input buffer"
+    result.eof = true
+    return result
+  end
+  let text = label.snapshot()
+  let output: Byte[] = tasks::generate(1048576, 1) do |index|
+    return 0 as Byte
+  end
+  var length = -1
+
+  unsafe
+    borrow text as p
+      borrow output as data
+        length = consoleEdit(p, text.Length, data, output.Length)
+      end
+    end
+  end
+  if length <= -5
+    result.completion = true
+    length = -5 - length
+    unsafe
+      result.cursor = consoleCursor()
+      result.event = consoleEvent()
+    end
+  end
+  if length == -1
+    result.eof = true
+  else if length == -2
+    result.error = "Input exceeds 1 MiB; line discarded"
+  else if length < 0 || !bytes.appendSlice(output, 0, length)
+    result.error = "Cannot read terminal input"
+  else
+    let decoded = bytes.text()
+
+    if decoded == null
+      result.error = "Input is not valid UTF-8; line discarded, session preserved"
+    else
+      result.text = decoded
+    end
+  end
+  return result
+end
+
+@cabiImport("getchar")
+unsafe def consoleByte(): Int32
+end
+
+class ConsoleLine
+  public event: Int = 0
+  public completion: Bool = false
+  public cursor: Int = 0
+  public text: String = ""
+  public eof: Bool = false
+  public error: String = ""
+end
+
+def readConsoleLine(prompt: String): ConsoleLine
+  var terminal = false
+
+  unsafe
+    terminal = consoleTerminal() != 0
+  end
+  if terminal
+    let line = editedConsoleLine(prompt)
+
+    if !line.completion
+      console::print(consoleColor("", "0"))
+    end
+    return line
+  end
+  console::print(prompt)
+  let result = new ConsoleLine()
+  let bytes = buffers::ByteBuffer.create(1048576)
+
+  if bytes == null
+    result.error = "Cannot allocate input buffer"
+    result.eof = true
+    return result
+  end
+  var ended = false
+
+  while true
+    var byte = -1
+
+    unsafe
+      byte = consoleByte() as Int
+    end
+    if byte < 0
+      ended = true
+      break
+    end
+    if byte == 10
+      break
+    end
+    if !bytes.append(byte as Byte)
+      result.error = "Input exceeds 1 MiB; line discarded"
+    end
+  end
+  result.eof = ended && bytes.length() == 0
+  if result.error != ""
+    return result
+  end
+  let text = bytes.text()
+
+  if text == null
+    result.error = "Input is not valid UTF-8; line discarded, session preserved"
+    return result
+  end
+  result.text = text
+  let length = host::stringByteLength(text)
+
+  if length > 0 && host::stringByteAt(text, length - 1) == (13 as Byte)
+    result.text = host::stringSlice(text, 0, length - 1)
+  end
+  return result
+end

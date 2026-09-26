@@ -1,67 +1,58 @@
-# Neri compatibility
+# Compatibility
 
-Sumi targets Linux with Neri's native compiler and runtime. Compatibility depends
-on the available language and runtime contracts, not just the version string.
-The verified installation is `neri 0.2.0-dev`, toolchain identity
-`528be7755ef11d6d106b9682c8ef4932d3ee7b889a14f95d7f923ebdad16e8be`.
-An installation with the same version string may expose different capabilities.
+Local development is verified on macOS ARM64. The package builder also has a
+Linux x86-64 target; the current console has not been validated there.
 
-## Verification
+## Running apps
 
-From the framework checkout:
+- Installed native Neri toolchain and a matching Sumi binary package.
+- Ito on `PATH` for applications using `package.json`.
+- Bash and standard shell utilities, including `/usr/bin/env -C`.
+
+A Sumi package matches an exact Neri toolchain/runtime identity, not just its
+version string. After changing Neri, install a matching Sumi package.
+The sources use Neri's `::` namespace qualification, `unsafe def` declarations
+and typed session status API. Build them with a toolchain that includes these
+contracts; see [local source updates](../CONTRIBUTING.md#build-and-install).
+`SUMI_CONSOLE_INCOMPATIBLE` means the package and selected toolchain differ;
+`SUMI_PACKAGE_CORRUPT` means installed files are missing or damaged. Reinstall a
+complete matching package in either case. Installation instructions are in
+[Getting started](GETTING-STARTED.md).
+
+`NERI` may also select a development launcher. If it is outside the installed
+package, Sumi asks that compiler for its runtime manifest and uses the package
+containing the manifest for compatibility checks. In this development-launcher
+case, the console session uses the selected compiler. `SUMI_CONSOLE_TOOLCHAIN`
+means the selected compiler cannot report a runtime manifest or the
+corresponding Neri package is incomplete; install the package before starting
+the console.
+
+Interactive console startup reports project loading, source counts, compilation
+phases, and native module cache reuse on one temporary line. The object cache
+reuses unchanged native code, including modules with shared native libraries.
+Each new console process still analyzes the application's source and types.
+
+## Building and testing Sumi
+
+Use the installed Neri toolchain's compiler prerequisites, a C compiler and
+libedit headers/library. Verification also needs Bash 4+, curl and GNU coreutils'
+`timeout` or `gtimeout`. On macOS, `brew install bash coreutils` supplies the latter
+tools; place Homebrew's `bin` directory before `/bin` in `PATH`.
 
 ```sh
 scripts/check-compatibility.sh --compile-only
 scripts/check-compatibility.sh
 ```
 
-`NERI` selects an executable. The checker resolves its launcher path once and
-reports that path, launcher SHA-256, and version. The launcher hash identifies
-that file, not every compiler, runtime, or standard-library component.
+`NERI=/path/to/neri` selects a toolchain. The full check runs HTTP and application
+contracts, starts temporary loopback listeners and verifies their shutdown.
+See [Contributing](../CONTRIBUTING.md) for package construction and focused tests.
 
-The compile-only check builds declared framework units and the native
-CLI without starting a listener. A failure preserves the compiler diagnostic and
-adds the failed unit and compatibility guidance. It proves compilation,
-not runtime behavior.
+The server's functional limits are listed in [HTTP](HTTP.md).
 
-The full check runs the behavior suite in Debug and Release: routing and
-middleware, environment precedence and errors, real HTTP requests, and generated
-projects outside the checkout with renamed directories. It briefly starts
-loopback listeners and stops every listener it starts. It requires Bash, curl,
-GNU core utilities, and `setsid`, along with the compiler's own build prerequisites.
-A failing test can indicate a local environment problem; it does not by itself
-prove a compiler defect.
-
-## Required contracts
-
-| Boundary | Required behavior |
-| --- | --- |
-| Projects | `build` and `run` with `--project` and named `--unit`; v2 source directories, explicit files, exclusions, and references; Debug and Release native executables. |
-| Language | Classes, nullable values with narrowing, arrays, contextual callbacks, trailing `do` blocks, and managed captured state that survives its declaring call. |
-| Host | UTF-8 text reads and writes, byte inspection and boundary-safe slicing, integer parsing, absolute paths, arguments, process environment, synchronous child execution with argument arrays and exit status. |
-| Clock | `clock.milliseconds()` returns an optional millisecond reading suitable for elapsed durations. A missing reading is reported as duration `-1`. |
-| Listener | `http.netOpen`, `netConfigure`, `netBind`, `netListen`, `netPoll`, `netAccept`, `netClose`, and `socketError`. Accepted descriptors belong to the adapter until closed. |
-| Request | `http.readHead` bounds headers to 8192 bytes and applies a two-second deadline; `http.parse` validates the supported HTTP/1.1 request and exposes method, path, query, and rejection status. |
-| Response | `http.writeText` writes the serialized UTF-8 response with a two-second deadline and reports whether delivery succeeded. |
-
-`src/http/http.hk` owns the transport boundary. Application routes use Sumi's
-request and response types. The adapter serializes responses, enforces the
-1 MiB response limit, and attaches request IDs and diagnostics.
-
-The current transport uses low-level standard-library helpers. Their presence
-and behavior are required; they are not treated as a stable versioned transport
-interface. Run the full check when changing toolchains.
-
-## Current limits
-
-- Multi-source project roots must use ASCII characters on the verified
-  toolchain; spaces are supported.
-- The server is synchronous, GET-only, loopback-only, and serves UTF-8 bodies.
-- Some parser and socket failures expose grouped status or Boolean results.
-  Sumi reports those categories without inventing a more specific cause.
-- Process interruption stops the server; graceful connection draining is not
-  available.
-- Persistent typed application evaluation is unavailable, so `sumi console`
-  reports `SUMI_CONSOLE_UNAVAILABLE`.
-
-Compilation success does not imply these missing capabilities are available.
+Server and console startup share Sumi's transient terminal presentation. `sumi s`
+uses a packaged build frontend over Neri's compiler API, including when Ito
+resolves the project. Both commands show real compilation phases and native
+function progress, clear the line before application output or diagnostics, and
+keep redirected output free of startup UI. A server cache hit reuses the Neri
+executable receipt; it does not reuse a console JIT module.

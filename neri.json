@@ -2,6 +2,16 @@
   "version": 2,
   "defaultUnit": "web",
   "units": {
+    "body-codecs": {
+      "kind": "executable",
+      "sources": ["tests/body_codecs.hk"],
+      "references": ["core"]
+    },
+    "form-contracts": {
+      "kind": "executable",
+      "sources": ["tests/form_contracts.hk"],
+      "references": ["core"]
+    },
     "core": {
       "kind": "library",
       "sources": ["src/core"]
@@ -37,6 +47,26 @@
       "sources": ["tests/web.hk"],
       "references": ["http"]
     },
+    "request-reader-contracts": {
+      "kind": "executable",
+      "sources": ["tests/request_reader.hk"],
+      "references": ["http"]
+    },
+    "worker-codec-contracts": {
+      "kind": "executable",
+      "sources": ["tests/worker_codec.hk"],
+      "references": ["http"]
+    },
+    "concurrent-contracts": {
+      "kind": "executable",
+      "sources": ["tests/concurrent.hk", "tests/concurrent_counter.hk"],
+      "references": ["http"]
+    },
+    "lifecycle-contracts": {
+      "kind": "executable",
+      "sources": ["tests/lifecycle.hk"],
+      "references": ["http"]
+    },
     "logging": {
       "kind": "executable",
       "sources": ["tests/logging.hk"],
@@ -50,7 +80,26 @@
     "cli": {
       "kind": "executable",
       "sources": ["cli"],
-      "references": ["core"]
+      "references": ["core", "package-common"]
+    },
+    "package-common": {
+      "kind": "library",
+      "sources": ["tooling/common.hk"]
+    },
+    "package-tool": {
+      "kind": "executable",
+      "sources": ["tooling/package.hk"],
+      "references": ["package-common"]
+    },
+    "package-contracts": {
+      "kind": "executable",
+      "sources": ["tests/package_contracts.hk"],
+      "references": ["package-common"]
+    },
+    "console-ui-contracts": {
+      "kind": "executable",
+      "sources": ["tests/console_ui.hk", "tests/console_screen.hk"],
+      "references": ["package-common"]
     }
   }
 }

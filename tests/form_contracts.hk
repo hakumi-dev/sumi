@@ -1,0 +1,143 @@
+use sumi
+use result
+use text
+use test
+
+class Visited
+  public names: String = ""
+end
+
+def expectFailure(bytes: Byte[], options: sumi::FormOptions?, code: String, offset: Int): Void
+  match sumi::parseForm(bytes, options)
+    case result::Result.Ok(form)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, code)
+      test::assertEqual(failure.offset, offset)
+  end
+end
+
+def expectCount(input: String, options: sumi::FormOptions?, expected: Int): Void
+  match sumi::parseForm(text::bytes(input), options)
+    case result::Result.Ok(form)
+      test::assertEqual(form.count(), expected)
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+  end
+end
+
+def main(): Void
+  let input = "&&a=one&a=two&=empty&novalue&plus=a+b%2Bc&escaped=%26%3D&utf8=%E6%B0%B4&raw=é&x[y]=z&eq=a=b&&"
+
+  match sumi::parseForm(text::bytes(input))
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+    case result::Result.Ok(form)
+      test::assertEqual(form.count(), 10)
+      test::assertTrue(form.get("a") == "one")
+      test::assertTrue(form.get("") == "empty")
+      test::assertTrue(form.get("novalue") == "")
+      test::assertTrue(form.get("plus") == "a b+c")
+      test::assertTrue(form.get("escaped") == "&=")
+      test::assertTrue(form.get("utf8") == "水")
+      test::assertTrue(form.get("raw") == "é")
+      test::assertTrue(form.get("x[y]") == "z")
+      test::assertTrue(form.get("eq") == "a=b")
+      test::assertTrue(form.get("missing") == null)
+      let values = form.values("a")
+      let visited = new Visited()
+
+      form.each() do |name, value|
+        visited.names = visited.names + "[" + name + "]"
+      end
+
+      test::assertEqual(values.Length, 2)
+      test::assertEqual(values[0], "one")
+      test::assertEqual(values[1], "two")
+      test::assertEqual(form.values("missing").Length, 0)
+      test::assertEqual(visited.names, "[a][a][][novalue][plus][escaped][utf8][raw][x[y]][eq]")
+      values[0] = "changed"
+
+      test::assertTrue(form.get("a") == "one")
+  end
+  match sumi::parseForm(text::bytes("nul=%00&emoji=%f0%9f%98%80"))
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+    case result::Result.Ok(form)
+      let nul = form.get("nul")
+
+      test::assertTrue(nul != null)
+      test::assertTrue(form.get("emoji") == "😀")
+      if nul != null
+        let bytes = text::bytes(nul)
+
+        test::assertEqual(bytes.Length, 1)
+        test::assertEqual(bytes[0] as Int, 0)
+      end
+  end
+
+  expectCount("", null, 0)
+  expectCount("&&&", null, 0)
+  expectCount("=&=", null, 2)
+  expectFailure(text::bytes("a=%"), null, "invalid_percent", 2)
+  expectFailure(text::bytes("a=%2"), null, "invalid_percent", 2)
+  expectFailure(text::bytes("a=%GG"), null, "invalid_percent", 2)
+  expectFailure(text::bytes("%C0%AF=x"), null, "invalid_utf8", 0)
+  expectFailure(text::bytes("a=%ED%A0%80"), null, "invalid_utf8", 5)
+  expectFailure(text::bytes("a=%F4%90%80%80"), null, "invalid_utf8", 5)
+  expectFailure(text::bytes("a=%E2%82"), null, "invalid_utf8", 2)
+  expectFailure([97 as Byte, 61 as Byte, 255 as Byte], null, "invalid_utf8", 2)
+  let limits = new sumi::FormOptions()
+
+  limits.maxBytes = 3
+  expectCount("a=b", limits, 1)
+  expectFailure(text::bytes("a=bc"), limits, "body_limit", 3)
+  limits.maxBytes = 1048576
+  limits.maxFields = 1
+  expectCount("&&a=1&&", limits, 1)
+  expectFailure(text::bytes("&a=1&&a=2"), limits, "field_limit", 6)
+  limits.maxFields = 1024
+  limits.maxKeyBytes = 1
+  expectCount("%61=x", limits, 1)
+  expectFailure(text::bytes("ab=x"), limits, "key_limit", 1)
+  limits.maxKeyBytes = 4096
+  limits.maxFieldBytes = 1
+  expectCount("a=%41", limits, 1)
+  expectFailure(text::bytes("a=%C3%A9"), limits, "value_limit", 5)
+  limits.maxFieldBytes = 0
+  limits.maxKeyBytes = 0
+  expectCount("=", limits, 1)
+  limits.maxFields = 0
+  expectCount("&&", limits, 0)
+  expectFailure(text::bytes("="), limits, "field_limit", 0)
+  limits.maxBytes = 0
+  expectCount("", limits, 0)
+  limits.maxBytes = 1048577
+  expectFailure([], limits, "invalid_options", 0)
+  limits.maxBytes = 0
+  limits.maxFields = 65537
+  expectFailure([], limits, "invalid_options", 0)
+  limits.maxFields = 0
+  limits.maxFieldBytes = -1
+  expectFailure([], limits, "invalid_options", 0)
+  limits.maxFieldBytes = 0
+  limits.maxKeyBytes = 1048577
+  expectFailure([], limits, "invalid_options", 0)
+  let request = new sumi::Request("POST", "/")
+
+  request.contentType = "application/x-www-form-urlencoded; charset=UTF-8"
+  request.body = text::bytes("answer=42")
+  match sumi::decodeForm(request)
+    case result::Result.Ok(form)
+      test::assertTrue(form.get("answer") == "42")
+    case result::Result.Error(failure)
+      test::assertTrue(false)
+  end
+  request.contentType = "text/plain"
+  match sumi::decodeForm(request)
+    case result::Result.Ok(form)
+      test::assertTrue(false)
+    case result::Result.Error(failure)
+      test::assertEqual(failure.code, "unsupported_media_type")
+  end
+end

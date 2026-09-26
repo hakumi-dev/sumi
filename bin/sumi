@@ -3,17 +3,13 @@ set -euo pipefail
 SUMI_LAUNCHER="${BASH_SOURCE[0]}"
 while [[ -L "$SUMI_LAUNCHER" ]]; do
   SUMI_LINK_DIR="$(cd -- "$(dirname -- "$SUMI_LAUNCHER")" && pwd -P)"
-  SUMI_LAUNCHER="$(readlink -- "$SUMI_LAUNCHER")"
+  SUMI_LAUNCHER="$(readlink "$SUMI_LAUNCHER")"
   [[ "$SUMI_LAUNCHER" = /* ]] || SUMI_LAUNCHER="$SUMI_LINK_DIR/$SUMI_LAUNCHER"
 done
-export SUMI_HOME="$(cd -- "$(dirname -- "$SUMI_LAUNCHER")/.." && pwd -P)"
-SUMI_COMPILER="${NERI:-neri}"
-if ! command -v "$SUMI_COMPILER" >/dev/null 2>&1; then
-  printf 'SUMI_CLI_COMPILER: Neri was not found. Install Neri or set NERI to its executable.\n' >&2
-  exit 127
+SUMI_ROOT="$(cd -- "$(dirname -- "$SUMI_LAUNCHER")/.." && pwd -P)"
+if [[ ! -f "$SUMI_ROOT/build/latest-package" ]]; then
+  printf 'SUMI_CHECKOUT_NOT_BUILT: Developer checkout. Run: bash "%s/scripts/build-package.sh"\n' "$SUMI_ROOT" >&2
+  exit 1
 fi
-export NERI="$(command -v "$SUMI_COMPILER")"
-if [[ "$NERI" != /* ]]; then
-  export NERI="$(cd -- "$(dirname -- "$NERI")" && pwd -P)/$(basename -- "$NERI")"
-fi
-exec "$NERI" run --project "$SUMI_HOME/neri.json" --unit cli -- "$@"
+IFS= read -r SUMI_PACKAGE < "$SUMI_ROOT/build/latest-package"
+exec "$SUMI_PACKAGE/bin/sumi" "$@"

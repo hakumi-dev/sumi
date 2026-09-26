@@ -1,0 +1,57 @@
+use buffers
+use text
+namespace sumiweb
+
+internal class WorkerPacketWriter
+  private buffer: buffers::ByteBuffer? = buffers::ByteBuffer.create(1114112, 1024)
+  private failed: Bool = false
+
+  def number(value: Int): Void
+    let buffer = this.buffer
+
+    if buffer == null || value < 0 || value > 4294967295
+      this.failed = true
+      return
+    end
+    var divisor = 16777216
+
+    while divisor > 0
+      let quotient = value / divisor
+
+      this.failed = true if !buffer.append((quotient - (quotient / 256) * 256) as Byte)
+      divisor = divisor / 256
+    end
+  end
+
+  def string(value: String, maximum: Int): Void
+    let buffer = this.buffer
+    let length = text::byteLength(value)
+
+    if buffer == null || length > maximum
+      this.failed = true
+      return
+    end
+    this.number(length)
+    this.failed = true if !buffer.appendText(value)
+  end
+
+  def bytes(value: Byte[], maximum: Int): Void
+    let buffer = this.buffer
+
+    if buffer == null || value.Length > maximum
+      this.failed = true
+      return
+    end
+    this.number(value.Length)
+    this.failed = true if !buffer.appendBytes(value)
+  end
+
+  def finish(): Byte[]?
+    let buffer = this.buffer
+
+    if this.failed || buffer == null
+      return null
+    end
+    return buffer.snapshot()
+  end
+end

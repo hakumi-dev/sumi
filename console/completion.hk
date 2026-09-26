@@ -1,0 +1,213 @@
+use host
+
+class ConsoleCompletionMenu
+  public result: SessionCompletionResult = new SessionCompletionResult()
+  public line: String = ""
+  public cursor: Int = 0
+  public offset: Int = 0
+  public selected: Int = 0
+  public visible: Bool = false
+
+  def close(): Void
+    this.visible = false
+    showConsoleMenu("")
+  end
+
+  def draw(): Void
+    var item = this.result.first
+    var index = 0
+    let start = this.selected > 2 ? this.selected - 2 : 0
+    var display = ""
+
+    while item != null && index < start + 3
+      if index >= start
+        let marker = index == this.selected ? "> " : "  "
+        let detail = item.detail == "" ? item.category : item.detail
+
+        let row = marker + item.name + "  " + detail
+
+        display = display + (index == this.selected ? consoleColor(row, "7") : row) + "\n"
+      end
+      item = item.next
+      index = index + 1
+    end
+    display = display + "Up/Down select · Tab/Enter insert · Esc close" + (this.result.truncated ? " · more matches" : "")
+    this.visible = true
+    showConsoleMenu(display)
+  end
+
+  def accept(session: ExecutableSession): Void
+    if !this.visible || this.result.generation != session.completionGeneration()
+      this.close()
+      return
+    end
+    var item = this.result.first
+    var index = 0
+
+    while item != null && index < this.selected
+      item = item.next
+      index = index + 1
+    end
+    if item == null
+      this.close()
+      return
+    end
+    let start = item.replacementStart - this.offset
+    let finish = item.replacementEnd - this.offset
+    let size = host::stringByteLength(this.line)
+
+    if start < 0 || start > this.cursor || finish < this.cursor || finish > size
+      this.close()
+      return
+    end
+    # Neri owns call insertion and the cursor position within the inserted text.
+    let inserted = item.insertText
+
+    if item.cursorByteOffset < 0 || item.cursorByteOffset > host::stringByteLength(inserted)
+      this.close()
+      return
+    end
+    let cursor = start + item.cursorByteOffset
+    let text = host::stringSlice(this.line, 0, start) + inserted + host::stringSlice(this.line, finish, size - finish)
+
+    this.close()
+    replaceConsoleLine(text, cursor)
+  end
+end
+
+def completionPrefix(text: String, prefix: String): Bool
+  let size = host::stringByteLength(prefix)
+
+  if host::stringByteLength(text) < size
+    return false
+  end
+  var index = 0
+
+  while index < size
+    if host::stringByteAt(text, index) != host::stringByteAt(prefix, index)
+      return false
+    end
+    index = index + 1
+  end
+  return true
+end
+
+def completionNameByte(byte: Int): Bool
+  return byte >= 128 || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 95
+end
+
+def automaticCompletionPosition(input: ConsoleLine): Bool
+  if input.cursor <= 0 || input.cursor > host::stringByteLength(input.text)
+    return false
+  end
+  let byte = host::stringByteAt(input.text, input.cursor - 1) as Int
+
+  if byte == 58
+    if input.cursor == 1
+      return true
+    end
+    return input.cursor > 1 && host::stringByteAt(input.text, input.cursor - 2) == (58 as Byte)
+  end
+  if !completionNameByte(byte) && byte != 46
+    return false
+  end
+  var start = input.cursor - (byte == 46 ? 1 : 0)
+
+  while start > 0 && completionNameByte(host::stringByteAt(input.text, start - 1) as Int)
+    start = start - 1
+  end
+  if start < input.cursor
+    let first = host::stringByteAt(input.text, start) as Int
+
+    # Digits may continue a name, but must not trigger suggestions for a number.
+    if first >= 48 && first <= 57
+      return false
+    end
+  end
+  return true
+end
+
+def completeConsoleLine(session: ExecutableSession, pending: String, input: ConsoleLine, menu: ConsoleCompletionMenu): Void
+  if input.event == 6
+    menu.close()
+    unsafe
+      consoleRefresh()
+    end
+    return
+  end
+  let current = menu.visible && menu.line == input.text && menu.cursor == input.cursor && menu.result.generation == session.completionGeneration()
+
+  if current && (input.event == 2 || input.event == 5)
+    menu.accept(session)
+    return
+  end
+  if current && (input.event == 3 || input.event == 4)
+    let next = menu.selected + (input.event == 3 ? 1 : -1)
+
+    if next >= 0 && next < menu.result.count
+      menu.selected = next
+    end
+    menu.draw()
+    return
+  end
+  menu.close()
+  if input.event != 2 && (input.event != 1 || !automaticCompletionPosition(input))
+    return
+  end
+  let line = input.text
+  let offset = host::stringByteLength(pending)
+  let size = host::stringByteLength(line)
+  var result = new SessionCompletionResult()
+
+  if completionPrefix(line, ":")
+    let prefix = host::stringSlice(line, 0, input.cursor)
+
+    for command in [":help", ":exit", ":reset", ":cancel"]
+      if completionPrefix(command, prefix)
+        let item = new SessionCompletionItem()
+
+        item.name = command
+        item.insertText = command
+        item.category = "command"
+        item.replacementStart = offset
+        item.replacementEnd = offset + size
+        item.cursorByteOffset = host::stringByteLength(command)
+        item.next = result.first
+        result.first = item
+        result.count = result.count + 1
+      end
+    end
+    result.generation = session.completionGeneration()
+  else
+    result = session.complete(pending + line, offset + input.cursor)
+  end
+  if !result.status.isComplete() || result.generation != session.completionGeneration()
+    return
+  end
+  let first = result.first
+
+  if first == null
+    return
+  end
+  let start = first.replacementStart - offset
+  let finish = first.replacementEnd - offset
+
+  if start < 0 || start > input.cursor || finish < input.cursor || finish > size
+    return
+  end
+  # An already complete unique token must not steal Enter from evaluation.
+  if input.event != 2 && result.count == 1 && host::stringSlice(line, start, finish - start) == first.name
+    return
+  end
+  menu.result = result
+  menu.line = line
+  menu.cursor = input.cursor
+  menu.offset = offset
+  menu.selected = 0
+  menu.visible = true
+  if input.event == 2 && result.count == 1 && !result.truncated
+    menu.accept(session)
+  else
+    menu.draw()
+  end
+end

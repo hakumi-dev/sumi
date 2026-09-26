@@ -2,21 +2,28 @@ use sumi
 use example
 use console
 use host
+use result
 
 def main(): Void
   let app = application(new GreetingService("Hello, ")) do |message|
-    console.println(message)
+    console::println(message)
   end
 
   let error = app.prepare()
 
   if error != null
-    console.println(error.message)
-    host.exit(1)
+    console::println(error.message)
+    host::exit(1)
     return
   end
 
-  let response = app.handle(new Request("GET", "/hello/Ada"))
+  let response = app.handle(new sumi::Request("GET", "/hello/Ada"))
 
-  console.println(response.body)
+  match response.text()
+    case result::Result.Ok(body)
+      console::println(body)
+    case result::Result.Error(failure)
+      console::println(failure.message)
+      host::exit(1)
+  end
 end

@@ -1,0 +1,53 @@
+use result
+use workers
+use sumi
+namespace sumiweb
+
+def runWorker(app: sumi::App): result::Result<Bool, result::Failure>
+  let invalid = app.prepare()
+
+  if invalid != null
+    return result::Result<Bool, result::Failure>.Error(new result::Failure(invalid.code, "sumiweb.runWorker", invalid.message))
+  end
+  let ready = try workers::ready()
+
+  while true
+    let bytes = try workers::receive()
+
+    if bytes == null
+      return result::Result<Bool, result::Failure>.Ok(true)
+    end
+    let request = decodeWorkerRequest(bytes)
+
+    if request == null
+      return result::Result<Bool, result::Failure>.Error(new result::Failure("invalid_packet", "sumiweb.runWorker", "Invalid worker request packet"))
+    end
+    let incoming = new Incoming()
+    let event = new LogEvent("http.request.completed")
+
+    incoming.request = request
+    incoming.status = 200
+    incoming.head = request.method == "HEAD"
+    event.requestId = request.requestId
+    event.method = request.method
+    let response = prepareConnectionResponse(app, incoming, event)
+    var packet = encodeWorkerReply(new WorkerReply(response, event))
+
+    if packet == null
+      let fallback = new LogEvent("http.request.completed")
+
+      fallback.requestId = request.requestId
+      fallback.method = request.method
+      fallback.status = 500
+      fallback.level = "error"
+      fallback.code = "SUMI_WORKER_REPLY_SIZE"
+      fallback.message = "Worker response or diagnostics exceed the bounded packet contract"
+      packet = encodeWorkerReply(new WorkerReply(wire(sumi::text("Internal Server Error", 500), incoming.head, request.requestId), fallback))
+    end
+    if packet == null
+      return result::Result<Bool, result::Failure>.Error(new result::Failure("reply_encoding", "sumiweb.runWorker", "Cannot encode bounded worker rejection"))
+    end
+    let sent = try workers::reply(packet)
+  end
+  return result::Result<Bool, result::Failure>.Ok(true)
+end

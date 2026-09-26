@@ -1,124 +1,134 @@
-# Sumi API
+# API
 
-All public names belong to the `sumi` namespace.
+Public application types use the `sumi` namespace.
 
 ## Application
 
-| Operation | Contract |
+| API | Purpose |
 | --- | --- |
-| `new App()` | Creates an application with an empty configuration. |
-| `get(path: String, handler: fn(Request): Response): Void` | Registers a GET handler. |
-| `file(path: String, source: String, contentType: String): Void` | Reads a UTF-8 file and registers its captured content as a GET response. |
-| `around(action: fn(Request, fn(Request): Response): Response): Void` | Registers synchronous middleware. |
-| `prepare(): ConfigurationError?` | Returns the first configuration error, or closes registration and returns `null`. |
-| `handle(request: Request): Response` | Dispatches a copy of the incoming request through the prepared middleware chain. |
+| `new App()` | Create an app. |
+| `get`, `head`, `post`, `put`, `patch`, `delete`, `options` `(path, handler)` | Register a `fn(Request): Response` handler. |
+| `route(method, path, handler)` | Register one of the seven supported methods by name. |
+| `file(path, source, contentType)` | Register a bounded binary or text file as a GET response. |
+| `around(handler)` | Register synchronous middleware. |
+| `prepare(): ConfigurationError?` | Validate configuration and close registration. |
+| `handle(request: Request): Response` | Dispatch a request in memory. |
 
-Registration records the first error and ignores subsequent additions. Calling
-`prepare()` again after successful preparation is harmless. Registering a route
-or middleware after preparation invalidates the application; a subsequent
-`prepare()` returns `Application is already prepared`.
-
-An unprepared or invalid application returns `500`, `Internal Server Error`,
-without invoking middleware or handlers. Configuration details are available
-through `ConfigurationError.code` and `ConfigurationError.message`, not through that response. Create a new
-application to replace an invalid configuration.
+Register everything before preparation. `sumiweb::serve` prepares automatically;
+call `prepare()` yourself before in-memory dispatch. Check its `code` and `message`
+on failure. An invalid or unprepared app returns 500. The first configuration
+error is retained; create a new app to replace an invalid configuration.
 
 ## Routes
 
-Patterns and request paths start with `/`. The root path is `/`. Other paths
-contain nonempty segments separated by `/`; trailing slashes and repeated slashes
-are not accepted. Query strings and fragments are not part of a Sumi path.
+```neri
+app.get("/users/:id") do |request|
+  let id = request.param("id")
+  if id == null
+    return sumi::text("Missing user ID", 400)
+  end
+  return sumi::text(id)
+end
 
-A segment beginning with `:` declares a parameter. Its name matches
-`[A-Za-z_][A-Za-z0-9_]*` and must be unique within its pattern. Each parameter
-matches exactly one nonempty segment. All other segments match literally.
-Matching is case-sensitive and preserves UTF-8 and percent escapes; Sumi does
-not decode or normalize paths.
+app.post("/echo") do |request|
+  return sumi::binary(request.body, "application/octet-stream", 201)
+end
+```
 
-Among matching routes, compare segments from left to right. A literal wins over
-a parameter at the first difference. Registration order does not change the
-result:
+- Paths start with `/`; no repeated or trailing slashes except the root `/`.
+- `:name` matches one segment. Names use `[A-Za-z_][A-Za-z0-9_]*` and cannot repeat
+  within a pattern.
+- Matching is case-sensitive. Paths and parameters are not percent-decoded.
+- Literals win over parameters at the first differing segment, regardless of
+  registration order: `/users/new` wins over `/users/:id`.
+- Equivalent patterns for the same method are rejected, including
+  `/users/:id` and `/users/:name`. Different methods may share a path.
 
-| Registered patterns | Request | Selected pattern |
-| --- | --- | --- |
-| `/users/:id`, `/users/new` | `/users/new` | `/users/new` |
-| `/:section/new`, `/users/:id` | `/users/new` | `/users/:id` |
+Unknown or invalid paths return 404. A known path without the requested method
+returns 405 with `allowedMethods`. HEAD uses an explicit handler or falls back to
+GET. OPTIONS defaults to 204 with the available methods unless explicitly handled.
+These defaults do not enable CORS.
 
-Equivalent patterns are configuration errors. This includes repeated literal
-patterns and patterns differing only in parameter names, such as `/users/:id`
-and `/users/:name`.
+## Request
 
-Malformed patterns produce `Invalid GET pattern: <pattern>`. Equivalent patterns
-produce `Duplicate GET pattern: <pattern>`.
+`new Request(method: String, path: String)` creates a request for in-memory use.
 
-An unmatched request returns `404`, `Not Found`. This includes unsupported
-methods, invalid path shapes, and paths with no registered handler. The method
-must be exactly `GET` to reach a route. Middleware can intercept any request
-before routing.
+| Member | Value |
+| --- | --- |
+| `method`, `path` | Request method and path without the query. |
+| `query` | Encoded query, without `?`. |
+| `body: Byte[]` | Authoritative raw body bytes; empty when absent. |
+| `headers: http::Headers` | Ordered fields with case-insensitive lookup; repeated values remain separate. |
+| `text(): result::Result<String, BodyFailure>` | Decode UTF-8 explicitly; invalid bytes return `invalid_utf8`. |
+| `json(options)` / `form(options)` | Decode JSON or URL-encoded forms explicitly, with typed failures. |
+| `contentType` | Request Content-Type; empty when absent. |
+| `requestId` | UUID supplied by the HTTP adapter. |
+| `param(name): String?` | Matched path parameter, or `null`. |
 
-## Request and response
+Raw transport never rejects a body merely because it is not UTF-8. Decode only
+when the handler requires text, JSON or a form, and choose an application response
+for a `BodyFailure` (`code`, `message`, `offset`). Multipart parsing is not supplied.
+See [Request and response bodies](BODIES.md) for codec limits and error handling.
+`handle` snapshots incoming body bytes and headers once; handler mutations do not
+change the original request. Matched parameters belong only to the selected handler.
 
-`new Request(method: String, path: String)` creates an incoming request.
-`method`, `path`, `query`, and `requestId` are readable and writable strings.
-The last two default to empty; the HTTP adapter supplies the encoded query and
-connection-local request identifier. `param(name: String):
-String?` returns a matched path value or `null`.
+## Response
 
-`handle` copies the caller's request before middleware runs. Middleware may
-change that copy or forward a different request. Dispatch creates a separate
-request for the selected handler and attaches only that route's parameters.
-Handler changes to its request do not change the middleware or caller request.
-Parameters do not persist between calls to `handle`.
+| API | Result |
+| --- | --- |
+| `text(body, status = 200)` | Plain-text response. |
+| `html(body, status = 200)` | HTML response. |
+| `json(value: json::Value, status = 200, options = null)` | JSON response wrapped in `result::Result<Response, BodyFailure>`. |
+| `binary(body: Byte[], contentType = "application/octet-stream", status = 200)` | Binary response. |
+| `new Response(status, body: Byte[])` | Response with plain-text content type by default. |
+| `response.text(): result::Result<String, BodyFailure>` | Explicit UTF-8 decoding of response bytes. |
+| `failure(code, message, status = 500)` | Generic error body with internal diagnostics. |
 
-`text(body: String, status: Int = 200): Response` constructs a text response.
-`new Response(status: Int, body: String)` is its explicit constructor. `status`
-and `body` are readable and writable. The in-memory core stores these values
-without HTTP serialization or status-range validation. `contentType` defaults to
-`text/plain; charset=utf-8`. `html(body, status = 200)` creates a response with
-`text/html; charset=utf-8`.
+`status`, `body`, `headers`, `contentType`, `allowedMethods`, `route`, `diagnosticCode` and
+`diagnosticMessage` are response fields. Diagnostic fields are logged, not sent
+to the client. Use `text` or `html` for messages the client should receive.
+Middleware replacing a response should preserve relevant route/diagnostic fields.
+See [HTTP](HTTP.md) for status, size and header limits.
 
-`file` reads at registration, before `prepare`, and retains that snapshot.
-Missing, unreadable, invalid UTF-8, and oversized files invalidate configuration.
-A file may be up to 1048576 bytes. Content types accept a token/token media type
-and optionally the exact suffix `; charset=utf-8`. Controls and malformed media
-types are rejected. Each dispatch creates a fresh response.
+`text` and `html` encode strings as UTF-8. `binary` and the constructor retain
+the supplied byte array; callers control later mutation. `headers.add(name, value)`
+returns `false` for invalid or over-budget fields. Repeated fields such as
+`Set-Cookie` retain insertion order. The adapter owns framing and standard response
+fields; attempting to override a reserved field produces a generic 500.
 
-Source paths resolve against the process working directory. Registered files
-are trusted application configuration, including any symlink targets. Request
-paths never select filesystem paths. Register each asset explicitly; automatic
-index resolution, binary bodies, ranges, and cache validators are not provided.
+## Static files
 
-`failure(code: String, message: String, status: Int = 500)` returns a generic
-`Internal Server Error` body with internal diagnostic fields. The HTTP logger
-receives `diagnosticCode` and `diagnosticMessage`; neither is serialized to the
-client. Use explicit `text` or `html` responses for messages intended for users.
-The router sets `Response.route` to the winning pattern for diagnostics.
-Middleware that replaces a response should preserve its diagnostic fields and
-route when those still describe the returned result.
+```neri
+app.file("/", "public/index.html", "text/html; charset=utf-8")
+app.file("/assets/site.css", "public/site.css", "text/css; charset=utf-8")
+app.file("/assets/logo.png", "public/logo.png", "image/png")
+```
 
-Parsing and validation belong to the application. For example, `host.parseInt`
-returns an optional integer; an application can respond with `400` when parsing
-fails or a parsed value falls outside its domain's allowed range.
+Files are read at registration, up to 1 MiB each. Restart after editing them.
+Source paths resolve from the process working directory. Register every URL
+explicitly; there is no directory serving. Images, fonts and other binary files
+are served without decoding. File metadata is checked against the limit before
+body allocation. Each response receives its own byte copy, so middleware cannot
+alter the stored file for later requests.
+
+Missing, unreadable, oversized or unsuccessfully closed files fail preparation. Content
+types accept a media type and optionally the exact suffix `; charset=utf-8`.
 
 ## Middleware
 
-For registrations `A`, then `B`, dispatch runs in this order:
-
-```text
-A before → B before → handler or 404 → B after → A after
+```neri
+app.around() do |request, next|
+  if request.method == "POST" && request.body.Length == 0
+    return sumi::text("Body required", 400)
+  end
+  return next(request)
+end
 ```
 
-Middleware may return early. A continuation belongs to one invocation: call it
-at most once, synchronously, before the middleware returns. Do not store it for
-later use. Each request receives fresh continuation state.
+Middleware runs in registration order before the handler, then in reverse order
+afterward. It can return early. Call `next(request)` at most once, synchronously,
+before returning; do not store it. Repeated or expired calls return 500 without
+running downstream code again. Earlier effects are not undone.
 
-A repeated call returns `500`, `Internal Server Error`, without running downstream
-code again. The violating middleware invocation also returns that error even
-if its callback ignores the repeated call's result. A call after the middleware
-has returned receives the same error and cannot dispatch; it does not change a
-response already returned to the caller. An outer middleware may transform any
-returned response, including errors.
-
-These checks do not undo downstream side effects from the first call and do not
-catch fatal language/runtime failures. Execution is synchronous; the core does
-not schedule concurrent requests or enforce handler deadlines.
+Execution is synchronous. Handlers receive dependencies through captured values
+or ordinary constructor arguments.

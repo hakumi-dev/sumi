@@ -1,4 +1,6 @@
 use host
+use files
+use result
 namespace sumi
 
 public class App
@@ -8,10 +10,38 @@ public class App
   private error: ConfigurationError?
 
   def get(path: String, handler: fn(Request): Response): Void
+    this.route("GET", path, handler)
+  end
+
+  def head(path: String, handler: fn(Request): Response): Void
+    this.route("HEAD", path, handler)
+  end
+
+  def post(path: String, handler: fn(Request): Response): Void
+    this.route("POST", path, handler)
+  end
+
+  def put(path: String, handler: fn(Request): Response): Void
+    this.route("PUT", path, handler)
+  end
+
+  def patch(path: String, handler: fn(Request): Response): Void
+    this.route("PATCH", path, handler)
+  end
+
+  def delete(path: String, handler: fn(Request): Response): Void
+    this.route("DELETE", path, handler)
+  end
+
+  def options(path: String, handler: fn(Request): Response): Void
+    this.route("OPTIONS", path, handler)
+  end
+
+  def route(method: String, path: String, handler: fn(Request): Response): Void
     if !this.canConfigure()
       return
     end
-    this.error = this.router.add(path, handler)
+    this.error = this.router.add(method, path, handler)
   end
 
   # Explicit URL-to-file mapping; content is captured at registration.
@@ -19,23 +49,24 @@ public class App
     if !this.canConfigure()
       return
     end
-    let body = host.readText(source)
-    if body == null
-      this.error = new ConfigurationError("Cannot read static file " + source + " for route " + path + ": " + host.errorMessage(), "SUMI_STATIC_READ")
-      return
-    end
-    if host.stringByteLength(body) > 1048576
-      this.error = new ConfigurationError("Static file " + source + " exceeds the 1048576-byte limit", "SUMI_STATIC_SIZE")
-      return
-    end
     if !validContentType(contentType)
       this.error = new ConfigurationError("Invalid content type for route " + path, "SUMI_CONTENT_TYPE")
       return
     end
-    this.get(path) do |request|
-      let response = new Response(200, body)
-      response.contentType = contentType
-      return response
+    match files::readBytesOutcome(source, 1048576)
+      case result::Result.Error(failure)
+        let cause = failure.cause
+        var detail = cause.code + " (OS " + (cause.osCode as String) + ")"
+        let closed = failure.closeFailure
+
+        if closed != null
+          detail = detail + "; close: " + closed.code + " (OS " + (closed.osCode as String) + ")"
+        end
+        this.error = new ConfigurationError("Cannot read static file " + source + " for route " + path + ": " + detail, cause.code == "limit_exceeded" ? "SUMI_STATIC_SIZE" : "SUMI_STATIC_READ")
+      case result::Result.Ok(body)
+        this.get(path) do |request|
+          return binary(copyBody(body), contentType)
+        end
     end
   end
 
@@ -58,6 +89,7 @@ public class App
       return router.dispatch(request)
     end
     var middleware = this.middleware
+
     while middleware != null
       pipeline = wrapMiddleware(middleware.action, pipeline)
       middleware = middleware.next
@@ -68,15 +100,21 @@ public class App
 
   def handle(request: Request): Response
     let error = this.error
+
     if error != null
       return failure(error.code, error.message)
     end
 
     let pipeline = this.pipeline
+
     if pipeline == null
       return failure("SUMI_APP_NOT_READY", "Call App.prepare() and check its result before dispatching requests")
     end
     let incoming = new Request(request.method, request.path)
+
+    incoming.body = copyBody(request.body)
+    incoming.headers = copyHeaders(request.headers)
+    incoming.contentType = request.contentType
     incoming.query = request.query
     incoming.requestId = request.requestId
     return pipeline(incoming)

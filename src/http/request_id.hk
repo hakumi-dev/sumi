@@ -1,0 +1,36 @@
+use crypto
+use host
+namespace sumiweb
+
+# RFC 9562 section 5.4: random UUID with version 4 and variant 10 bits.
+def requestIdFrom(source: crypto::EntropySource): String?
+  let result = source.bytes(16)
+  let bytes = result.bytes()
+
+  if bytes == null
+    return null
+  end
+  let digits = "0123456789abcdef"
+  var id = ""
+  var index = 0
+
+  while index < 16
+    var byte = bytes[index] as Int
+
+    if index == 6
+      byte = byte - (byte / 16) * 16 + 64
+    else if index == 8
+      byte = byte - (byte / 64) * 64 + 128
+    end
+    if index == 4 || index == 6 || index == 8 || index == 10
+      id = id + "-"
+    end
+    id = id + host::stringSlice(digits, byte / 16, 1) + host::stringSlice(digits, byte - (byte / 16) * 16, 1)
+    index = index + 1
+  end
+  return id
+end
+
+def newRequestId(): String?
+  return requestIdFrom(crypto::EntropySource.system())
+end

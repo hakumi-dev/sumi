@@ -1,0 +1,13 @@
+namespace sumiweb
+
+class ConcurrentOptions: Options
+  public workerCount: Int = 4
+  public maxConnections: Int = 64
+  public maxOutstanding: Int = 32
+  public maxReservedBytes: Int = 67108864
+  public startupTimeoutMilliseconds: Int = 30000
+
+  def init(): Void
+    this.forceExitAfterStopMilliseconds = 30000
+  end
+end

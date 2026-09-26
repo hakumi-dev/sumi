@@ -3,7 +3,7 @@ set -euo pipefail
 SUMI_TEST_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$SUMI_TEST_ROOT/tests/process.sh"
 cli="$1"
-export SUMI_HOME="$SUMI_TEST_ROOT"
+export SUMI_HOME="${SUMI_PACKAGE_HOME:-$SUMI_TEST_ROOT}"
 export NERI="$(command -v "${NERI:-neri}")"
 unset SUMI_ENV PORT
 project="$SUMI_TEST_WORK/my site"
@@ -22,11 +22,16 @@ if timeout 5 "$cli" server --project "$project" --port '' > "$SUMI_TEST_WORK/err
 grep -qF 'SUMI_CLI_ARGUMENT: Missing port' "$SUMI_TEST_WORK/error"
 mv "$project/app" "$project/application"
 mv "$project/public" "$project/assets"
-sed -i 's@"app"@"application"@' "$project/neri.json"
+sed 's@"app"@"application"@' "$project/neri.json" > "$SUMI_TEST_WORK/manifest"
+mv "$SUMI_TEST_WORK/manifest" "$project/neri.json"
 # New library files are visible through project references without manifest edits.
 printf 'namespace exampleweb\ndef discovered(): Int\n  return 42\nend\n' > "$project/application/additional.hk"
-sed -i '/def main(): Void/a\  test.assertEqual(exampleweb.discovered(), 42)' "$project/tests/application.hk"
-sed -i 's@public=public@public=assets@' "$project/sumi.conf"
+sed '/def main(): Void/a\
+  test::assertEqual(exampleweb::discovered(), 42)
+' "$project/tests/application.hk" > "$SUMI_TEST_WORK/application.hk"
+mv "$SUMI_TEST_WORK/application.hk" "$project/tests/application.hk"
+sed 's@public=public@public=assets@' "$project/sumi.conf" > "$SUMI_TEST_WORK/config"
+mv "$SUMI_TEST_WORK/config" "$project/sumi.conf"
 (cd "$project/application" && "$cli" t)
 "$cli" test --project "$project" --release
 "$cli" b --project "$project" --release
@@ -36,12 +41,27 @@ printf 'PORT=2\n' > "$project/.env.development"
 start_server 'Sumi listening' "$cli" s --project "$project" --port "$SUMI_TEST_PORT"
 request /; expect_status 200
 grep -qF 'It all starts' "$SUMI_TEST_WORK/body"
+for asset in site.css site.js; do
+  request "/assets/$asset"; expect_status 200
+  cmp "$SUMI_TEST_WORK/body" "$project/assets/$asset"
+done
 stop_server
 if curl -s --max-time 1 "http://127.0.0.1:$SUMI_TEST_PORT/" > /dev/null; then fail 'server still alive'; fi
+# Run the built executable with external assets from its documented working
+# directory, on the same port previously used by the compiler/CLI process tree.
+cd "$project"
+start_server 'Sumi listening' env PORT="$SUMI_TEST_PORT" SUMI_PUBLIC=assets "$project/build/application"
+request /; expect_status 200
+cmp "$SUMI_TEST_WORK/body" "$project/assets/index.html"
+for asset in site.css site.js; do
+  request "/assets/$asset"; expect_status 200
+  cmp "$SUMI_TEST_WORK/body" "$project/assets/$asset"
+done
+stop_server
+cd "$SUMI_TEST_WORK"
 if "$cli" s --project "$project" --port 0 > "$SUMI_TEST_WORK/error" 2>&1; then fail 'invalid port accepted'; fi
 grep -qF SUMI_CLI_PORT "$SUMI_TEST_WORK/error"
-if "$cli" c --project "$project" > "$SUMI_TEST_WORK/error" 2>&1; then fail 'unavailable console reported success'; fi
-grep -qF SUMI_CONSOLE_UNAVAILABLE "$SUMI_TEST_WORK/error"
+bash "$SUMI_TEST_ROOT/tests/console_contracts.sh" "$cli" "$project"
 printf 'unknown=value\n' > "$project/sumi.conf"
 if "$cli" test --project "$project" > "$SUMI_TEST_WORK/error" 2>&1; then fail 'unknown config accepted'; fi
 grep -qF SUMI_CLI_CONFIG "$SUMI_TEST_WORK/error"

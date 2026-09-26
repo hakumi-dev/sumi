@@ -2,47 +2,174 @@ use sumi
 use sumiweb
 use host
 use console
+use result
+use text
 
 def main(): Void
-  let app = new sumi.App()
+  let app = new sumi::App()
+
   app.get("/failure/:name") do |request|
-    return sumi.failure("APP_GREETING_UNAVAILABLE", "Greeting service unavailable")
+    return sumi::failure("APP_GREETING_UNAVAILABLE", "Greeting service unavailable")
   end
   app.get("/unicode") do |request|
-    return sumi.failure("APP_UNICODE", "Diagnóstico: 水\nsecond line")
+    return sumi::failure("APP_UNICODE", "Diagnóstico: 水\nsecond line")
   end
   app.get("/invalid") do |request|
-    let response = sumi.text("must not leak")
+    let response = sumi::text("must not leak")
+
     response.contentType = "text/html\r\nInjected: yes"
     return response
   end
   app.get("/status/:value") do |request|
     let raw = request.param("value")
+
     if raw == null
-      return sumi.text("missing", 400)
+      return sumi::text("missing", 400)
     end
-    let status = host.parseInt(raw)
+    let status = host::parseInt(raw)
+
     if status == null
-      return sumi.text("invalid", 400)
+      return sumi::text("invalid", 400)
     end
-    return sumi.text("payload", status)
+    return sumi::text("payload", status)
   end
   app.get("/context") do |request|
-    return sumi.text(request.query + ":" + request.requestId)
+    return sumi::text(request.query + ":" + request.requestId)
   end
-  let options = new sumiweb.Options()
+  app.around() do |request, next|
+    if request.path == "/middleware"
+      match request.text()
+        case result::Result.Ok(body)
+          request.body = text::bytes(body + ":middleware")
+        case result::Result.Error(failure)
+          return sumi::text(failure.message, 415)
+      end
+    end
+    let response = next(request)
+
+    if request.path == "/static-binary" && request.query == "mutate=1"
+      response.body[0] = 66 as Byte
+    end
+    return response
+  end
+  for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    app.route(method, "/methods/:id") do |request|
+      let id = request.param("id")
+
+      if id == null
+        return sumi::text("missing parameter", 400)
+      end
+      match request.text()
+        case result::Result.Ok(body)
+          return sumi::text(request.method + ":" + id + ":" + body)
+        case result::Result.Error(failure)
+          return sumi::text(failure.message, 415)
+      end
+    end
+  end
+  app.get("/head") do |request|
+    return sumi::text("GET response")
+  end
+  app.head("/head") do |request|
+    return sumi::text("explicit HEAD", 202)
+  end
+  app.post("/middleware") do |request|
+    match request.text()
+      case result::Result.Ok(body)
+        return sumi::text(body + ":" + request.contentType)
+      case result::Result.Error(failure)
+        return sumi::text(failure.message, 415)
+    end
+  end
+  app.post("/echo") do |request|
+    return sumi::binary(request.body)
+  end
+  app.post("/text") do |request|
+    match request.text()
+      case result::Result.Ok(body)
+        return sumi::text(body)
+      case result::Result.Error(failure)
+        return sumi::text(failure.code, 415)
+    end
+  end
+  app.post("/json-codec") do |request|
+    match request.json()
+      case result::Result.Error(failure)
+        return sumi::text("invalid JSON", 400)
+      case result::Result.Ok(value)
+        match sumi::json(value)
+          case result::Result.Ok(response)
+            return response
+          case result::Result.Error(failure)
+            return sumi::text("encoding failed", 500)
+        end
+    end
+  end
+  app.post("/form-codec") do |request|
+    match request.form()
+      case result::Result.Error(failure)
+        return sumi::text("invalid form", 400)
+      case result::Result.Ok(form)
+        let values = form.values("name")
+
+        if values.Length != 2
+          return sumi::text("expected two names", 400)
+        end
+        return sumi::text(values[0] + ":" + values[1])
+    end
+  end
+  app.get("/binary") do |request|
+    return sumi::binary([0 as Byte, 255 as Byte, 195 as Byte, 40 as Byte, 65 as Byte])
+  end
+  app.get("/headers") do |request|
+    let values = request.headers.values("x-tag")
+    let response = sumi::text(values.Length == 2 ? values[0] + ":" + values[1] : "missing")
+
+    response.headers.add("Set-Cookie", "a=1")
+    response.headers.add("Set-Cookie", "b=2")
+    return response
+  end
+  app.get("/reserved-header/:name") do |request|
+    let name = request.param("name")
+    let response = sumi::text("must not leak")
+
+    response.headers.add(name, "injected") if name != null
+    return response
+  end
+  app.get("/duplicate-location") do |request|
+    let response = sumi::text("must not leak", 302)
+
+    response.headers.add("Location", "/first")
+    response.headers.add("location", "/second")
+    return response
+  end
+  let binaryFile = host::environment("SUMI_BINARY")
+
+  app.file("/static-binary", binaryFile, "image/png") if binaryFile != null
+  app.get("/allow-injection") do |request|
+    let response = sumi::text("must not leak", 405)
+
+    response.allowedMethods = ["GET\r\nInjected: yes"]
+    return response
+  end
+  let options = new sumiweb::Options()
+
   options.onListening = fn(address)
-    console.println("READY")
+    console::println("READY")
   end
   options.log = fn(event)
-    console.println(sumiweb.format(event))
+    console::println(sumiweb::format(event))
   end
-  let port = host.environment("PORT")
+  let port = host::environment("PORT")
+
   if port == null
-    host.exit(1)
+    host::exit(1)
     return
   end
-  let error = sumiweb.serve(app, "127.0.0.1:" + port, options)
-  console.println(error.code + ": " + error.message)
-  host.exit(1)
+  let error = sumiweb::serve(app, "127.0.0.1:" + port, options)
+
+  if error != null
+    console::println(error.code + ": " + error.message)
+    host::exit(1)
+  end
 end

@@ -1,0 +1,207 @@
+use sumi
+use sumiweb
+use host
+use console
+use clock
+use http
+use httpclient
+use result
+use text
+use workers
+use arrays
+
+def marker(work: String, name: String): String
+  return work + "/" + name
+end
+
+def waitFor(path: String): Bool
+  let polling = http::PollSet.create(0)
+  let started = clock::milliseconds()
+
+  if polling == null || started == null
+    return false
+  end
+  while host::readText(path) == null
+    let now = clock::milliseconds()
+
+    if now == null || now - started >= 5000
+      return false
+    end
+    unsafe
+      match polling.wait(10)
+        case result::Result.Ok(value)
+        case result::Result.Error(failure)
+          return false
+      end
+    end
+  end
+  return true
+end
+
+def partialClient(work: String): Bool
+  let portText = host::environment("PORT")
+
+  if portText == null
+    return false
+  end
+  let port = host::parseInt(portText)
+
+  if port == null
+    return false
+  end
+  unsafe
+    let fd = http::netOpen()
+
+    if fd < 0 || http::netConfigure(fd) != 0 || httpclient::netConnect(fd, port, 2000) != 0
+      http::netClose(fd) if fd >= 0
+      return false
+    end
+    let deadline = http::netMilliseconds() + 2000
+    let partial = http::writePayloadResult(fd, "POST /partial HTTP/1.1\r\nHost: localhost\r\nContent-Length: 32\r\n\r\npartial", null, deadline)
+
+    if partial.failure != null
+      http::netClose(fd)
+      return false
+    end
+    host::writeText(marker(work, "partial-ready"), "1")
+    let released = waitFor(marker(work, "partial-release"))
+
+    http::netClose(fd)
+    return released
+  end
+end
+
+def workerEntry(config: Byte[]): Void
+  let work = host::stringFromBytes(config)
+
+  if work == null
+    workers::fail(text::bytes("invalid worker configuration"))
+    return
+  end
+  let mode = host::environment("MODE")
+
+  if mode == "startup-slow"
+    console::println("WORKER_STARTING")
+    waitFor(marker(work, "never"))
+  end
+  let app = new sumi::App()
+  let appCounter = new ConcurrentCounter()
+  let startupFailure = host::readText(marker(work, "startup-failure")) != null
+
+  if startupFailure
+    app.get("/duplicate") do |request|
+      return sumi::text("one")
+    end
+    app.get("/duplicate") do |request|
+      return sumi::text("two")
+    end
+  end
+
+  app.get("/gate") do |request|
+    appCounter.value = appCounter.value + 1
+    let entered = marker(work, "entered-" + request.requestId)
+    let finished = marker(work, "finished-" + request.requestId)
+
+    host::writeText(entered, appCounter.value as String)
+    if !waitFor(marker(work, "release"))
+      return sumi::failure("APP_BARRIER_TIMEOUT", "gate barrier timed out")
+    end
+    host::writeText(finished, appCounter.value as String)
+    return sumi::text("gate-" + (appCounter.value as String))
+  end
+  app.get("/fast") do |request|
+    console::println("HANDLER_FAST")
+    return sumi::text("fast")
+  end
+  app.post("/echo") do |request|
+    return sumi::binary(request.body)
+  end
+
+  match sumiweb::runWorker(app)
+    case result::Result.Ok(value)
+      if mode == "cleanup-slow"
+        console::println("WORKER_CLEANUP_BEGIN")
+        waitFor(marker(work, "never"))
+      end
+      console::println("WORKER_CLEANUP")
+    case result::Result.Error(failure)
+      console::println("WORKER_PREPARE_FAILURE")
+      workers::fail(text::bytes("worker prepare failed: " + failure.detail))
+  end
+end
+
+def main(): Void
+  let port = host::environment("PORT")
+  let work = host::environment("SUMI_TEST_WORK")
+  let mode = host::environment("MODE")
+
+  if port == null || work == null || mode == null
+    host::exit(2)
+    return
+  end
+  if mode == "partial-client"
+    host::exit(1) if !partialClient(work)
+    return
+  end
+  if mode == "binary-payload"
+    let payload: Byte[] = arrays::generate(262144) do |index|
+      return (index - (index / 256) * 256) as Byte
+    end
+
+    host::exit(1) if !host::writeBytes(marker(work, "payload"), payload)
+    return
+  end
+  if mode == "startup-failure"
+    let config = text::bytes(work)
+    let options = new sumiweb::ConcurrentOptions()
+
+    options.workerCount = 2
+    options.maxConnections = 64
+    options.maxOutstanding = 32
+    options.maxReservedBytes = 67108864
+    let error = sumiweb::serveConcurrent(workerEntry, config, "127.0.0.1:" + port, options)
+
+    if error != null
+      console::println(error.code + ": " + error.message)
+      host::exit(1)
+      return
+    end
+    host::exit(2)
+    return
+  end
+  let options = new sumiweb::ConcurrentOptions()
+
+  options.workerCount = 2
+  options.maxConnections = 64
+  options.maxOutstanding = 2
+  options.maxReservedBytes = 67108864
+  options.startupTimeoutMilliseconds = 150 if mode == "startup-slow"
+  options.forceExitAfterStopMilliseconds = 150 if mode == "cleanup-slow" || mode == "handler-slow"
+  if mode == "slow-log"
+    options.log = fn(event)
+      if event.event == "http.request.started"
+        let polling = http::PollSet.create(0)
+
+        if polling != null
+          unsafe
+            polling.wait(2200)
+          end
+        end
+      end
+    end
+  end
+  options.onListening = fn(address)
+    console::println("READY")
+  end
+  options.onShutdown = fn()
+    console::println("SHUTDOWN_LAST")
+  end
+  let error = sumiweb::serveConcurrent(workerEntry, text::bytes(work), "127.0.0.1:" + port, options)
+
+  if error != null
+    console::println(error.code + ": " + error.message)
+    host::exit(1)
+    return
+  end
+  console::println("EXIT_NORMAL")
+end

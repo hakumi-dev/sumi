@@ -1,0 +1,56 @@
+use result
+use concurrency_tokens_data
+use neri_data_sqlite
+
+def writeSucceeded(value: neri_data::WriteResult, expected: Int): Bool
+  match value
+    case neri_data::WriteResult.Saved(count)
+      return count == expected
+    case neri_data::WriteResult.SavedWithValues(count, outputs)
+      return false
+    case neri_data::WriteResult.Failure(error)
+      return false
+  end
+  return false
+end
+
+# Fixture request scope: the worker owns the session, each request owns its context.
+resource class RequestTransaction
+  private context: ConcurrencyDatabase
+  private finished: Bool = false
+
+  private def init(context: ConcurrencyDatabase): Void
+    this.context = context
+  end
+
+  static def open(provider: SQLiteProvider): result::Result<RequestTransaction, result::Failure>
+    let db = new ConcurrencyDatabase(provider)
+
+    if !writeSucceeded(db.beginTransaction(), 0)
+      return result::Result<RequestTransaction, result::Failure>.Error(new result::Failure("begin_failed", "request.transaction"))
+    end
+    let owned = new RequestTransaction(db)
+
+    return result::Result<RequestTransaction, result::Failure>.Ok(transfer owned)
+  end
+
+  def database(): ConcurrencyDatabase
+    return this.context
+  end
+
+  def commit(): Bool
+    this.finished = writeSucceeded(this.context.commitTransaction(), 0)
+    return this.finished
+  end
+
+  def close(): result::Failure?
+    if this.finished
+      return null
+    end
+    this.finished = true
+    if !writeSucceeded(this.context.rollbackTransaction(), 0)
+      return new result::Failure("rollback_failed", "request.transaction.close")
+    end
+    return null
+  end
+end

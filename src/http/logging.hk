@@ -1,25 +1,45 @@
 use host
+use console
+use clock
 namespace sumiweb
 
 class Options
   public minimumLevel: String = "info"
+  public databaseQueries: Bool = false
+  public slowQueryMs: Int = 200
   public onListening: (fn(String): Void)?
+  public onShutdown: (fn(): Void)?
+  public stop: http::Stop?
+  public handleInterrupts: Bool = true
+  public forceExitAfterStopMilliseconds: Int?
   public log: (fn(LogEvent): Void)?
 end
 
 class LogEvent
   public level: String = "info"
   public event: String
+  public timestamp: String = ""
   public requestId: String = ""
   public status: Int = 0
   public durationMs: Int = 0
+  public readMs: Int = -1
+  public appMs: Int = -1
+  public writeMs: Int = -1
   public method: String = ""
   public route: String = ""
+  public path: String = ""
   public code: String = ""
   public message: String = ""
+  public databaseOperation: String = ""
+  public sql: String = ""
+  public parameterCount: Int = 0
+  public statementCount: Int = 0
+  public affectedCount: Int = 0
+  public returnedCount: Int = 0
 
   def init(event: String): Void
     this.event = event
+    this.timestamp = logTimestamp()
   end
 end
 
@@ -30,8 +50,39 @@ def emit(options: Options?, event: LogEvent): Void
     end
 
     let log = options.log
+
+    event.timestamp = logTimestamp()
     log(event) if log != null
   end
+end
+
+def databaseLog(options: Options?, operation: String, sql: String, durationMs: Int, parameterCount: Int, statementCount: Int, affectedCount: Int, returnedCount: Int, failureKind: String = "", requestId: String = ""): Void
+  if options == null || !options.databaseQueries
+    return
+  end
+  let interrupted = failureKind == "stopped" || failureKind == "cancelled"
+  let failed = failureKind != "" && !interrupted
+  let event = new LogEvent(failed ? "database.command.failed" : "database.command.completed")
+
+  event.databaseOperation = operation
+  event.sql = sql
+  event.durationMs = durationMs
+  event.parameterCount = parameterCount
+  event.statementCount = statementCount
+  event.affectedCount = affectedCount
+  event.returnedCount = returnedCount
+  event.requestId = requestId
+  event.code = failureKind
+  if failed
+    event.level = "error"
+  else if interrupted
+    event.level = "warning"
+  else if durationMs >= 0 && durationMs >= options.slowQueryMs
+    event.level = "warning"
+  else
+    event.level = "debug"
+  end
+  emit(options, event)
 end
 
 def levelRank(level: String): Int
@@ -55,11 +106,13 @@ def quoted(value: String): String
   var result = "\""
   var index = 0
   var start = 0
-  let length = host.stringByteLength(value)
+  let length = host::stringByteLength(value)
+
   while index < length
-    let byte = host.stringByteAt(value, index) as Int
+    let byte = host::stringByteAt(value, index) as Int
+
     if byte == 34 || byte == 92 || byte < 32 || byte == 127
-      result = result + host.stringSlice(value, start, index - start)
+      result = result + host::stringSlice(value, start, index - start)
       if byte == 34
         result = result + "\\\""
       else if byte == 92
@@ -71,12 +124,173 @@ def quoted(value: String): String
     end
     index = index + 1
   end
-  result = result + host.stringSlice(value, start, length - start)
+  result = result + host::stringSlice(value, start, length - start)
   return result + "\""
 end
 
 def format(event: LogEvent): String
-  return "level=" + quoted(event.level) + " event=" + quoted(event.event) + " request_id=" + quoted(event.requestId) + " status=" + (event.status as String) + " duration_ms=" + (event.durationMs as String) + " method=" + quoted(event.method) + " route=" + quoted(event.route) + " code=" + quoted(event.code) + " message=" + quoted(event.message)
+  let common = "timestamp=" + quoted(event.timestamp) + " level=" + quoted(event.level) + " event=" + quoted(event.event) + " request_id=" + quoted(event.requestId) + " status=" + (event.status as String) + " duration_ms=" + (event.durationMs as String) + " method=" + quoted(event.method) + " route=" + quoted(event.route) + " path=" + quoted(event.path) + " code=" + quoted(event.code) + " message=" + quoted(event.message) + " read_ms=" + (event.readMs as String) + " app_ms=" + (event.appMs as String) + " write_ms=" + (event.writeMs as String)
+
+  if !databaseEvent(event)
+    return common
+  end
+  return common + " database_operation=" + quoted(event.databaseOperation) + " sql=" + quoted(event.sql) + " parameter_count=" + (event.parameterCount as String) + " statement_count=" + (event.statementCount as String) + " affected_count=" + (event.affectedCount as String) + " returned_count=" + (event.returnedCount as String)
+end
+
+def databaseEvent(event: LogEvent): Bool
+  return event.event == "database.command.completed" || event.event == "database.command.failed"
+end
+
+# POSIX terminal detection only; formatting and policy stay in Neri.
+@cabiImport("isatty")
+unsafe def logIsTerminal(descriptor: Int32): Int32
+end
+
+def consoleColors(): Bool
+  let disabled = host::environment("NO_COLOR")
+
+  if disabled != null && disabled != ""
+    return false
+  end
+  let term = host::environment("TERM")
+
+  if term != null && term == "dumb"
+    return false
+  end
+  return consoleTerminal()
+end
+
+def consoleTerminal(): Bool
+  unsafe
+    return logIsTerminal(1 as Int32) == (1 as Int32)
+  end
+end
+
+def logStyle(value: String, style: String): String
+  let escape = host::stringFromBytes([27 as Byte])
+
+  if escape == null
+    return value
+  end
+  return escape + "[" + style + "m" + value + escape + "[0m"
+end
+
+# Keep format() deterministic and plain for file/custom sinks.
+def formatConsole(event: LogEvent): String
+  if !consoleTerminal()
+    return format(event)
+  end
+  return formatReadable(event, consoleColors())
+end
+
+def readableStyle(value: String, style: String, colors: Bool): String
+  return logStyle(value, style) if colors
+  return value
+end
+
+# Terminal sink: one summary per request; structured sinks retain both events.
+def logConsole(event: LogEvent): Void
+  if consoleTerminal() && event.event == "http.request.started"
+    return
+  end
+  console::println(formatConsole(event))
+end
+
+# A readable projection of the same event; no invented controller/SQL timings.
+def formatReadable(event: LogEvent, colors: Bool): String
+  var levelStyle = "34"
+
+  if event.level == "debug"
+    levelStyle = "90"
+  else if event.level == "warning"
+    levelStyle = "33"
+  else if event.level == "error"
+    levelStyle = "31"
+  end
+  var statusStyle = "90"
+
+  if event.status >= 500
+    statusStyle = "31"
+  else if event.status >= 400
+    statusStyle = "33"
+  else if event.status >= 300
+    statusStyle = "36"
+  else if event.status >= 200
+    statusStyle = "32"
+  end
+  var suffix = ""
+
+  if event.requestId != ""
+    suffix = "  " + readableStyle("#" + readableText(event.requestId), "90", colors)
+  end
+  var line = ""
+
+  if event.event == "http.request.started"
+    line = "request received"
+  else if event.event == "http.request.dispatching"
+    line = readableStyle(readableText(event.method), "1;36", colors) + "  → app (routing · middleware · handler)"
+  else if event.event == "http.request.completed" || event.event == "http.response.write_failed"
+    line = "HTTP"
+    if event.method != ""
+      line = readableStyle(readableText(event.method), "1;36", colors)
+    end
+    if event.route != ""
+      line = line + "  " + readableStyle(quoted(event.route), "1", colors)
+    else if event.path != ""
+      line = line + "  " + readableStyle(quoted(event.path), "1", colors)
+    else
+      line = line + "  " + readableStyle("(path unavailable)", "90", colors)
+    end
+    line = line + "  → " + readableStyle(event.status as String, statusStyle, colors) + "  · " + readableStyle(logDuration(event.durationMs), "90", colors)
+    if event.event == "http.response.write_failed"
+      line = line + "  " + readableStyle("SEND FAILED", "31", colors)
+    end
+  else if databaseEvent(event)
+    line = readableStyle(readableText(event.level), levelStyle, colors) + " SQL " + readableStyle(readableText(event.databaseOperation), "1;36", colors) + "  · " + logDuration(event.durationMs) + "  · parameters=" + (event.parameterCount as String) + " statements=" + (event.statementCount as String) + " affected=" + (event.affectedCount as String) + " returned=" + (event.returnedCount as String) + "  | " + quoted(event.sql)
+  else
+    line = readableStyle(readableText(event.level), levelStyle, colors) + " " + readableText(event.event)
+  end
+  line = line + suffix
+  if event.readMs >= 0 || event.appMs >= 0 || event.writeMs >= 0
+    line = line + "  | " + readableStyle("read " + logDuration(event.readMs) + " · app " + logDuration(event.appMs) + " · send " + logDuration(event.writeMs), "90", colors)
+  end
+  if event.code != "" || event.message != ""
+    line = line + "  | "
+  end
+  if event.code != ""
+    line = line + readableStyle(readableText(event.code), levelStyle, colors)
+  end
+  if event.message != ""
+    if event.code != ""
+      line = line + " — "
+    end
+    line = line + readableText(event.message)
+  end
+  return readableStyle("[" + readableText(event.timestamp) + "]", "90", colors) + " " + line
+end
+
+def logTimestamp(): String
+  let now = clock::Timestamp.now()
+
+  if now != null
+    let formatted = now.formatUtc()
+
+    if formatted != null
+      return formatted
+    end
+  end
+  return "time unavailable"
+end
+
+def logDuration(milliseconds: Int): String
+  return "n/a" if milliseconds < 0
+  return (milliseconds as String) + "ms"
+end
+
+def readableText(value: String): String
+  let escaped = quoted(value)
+
+  return host::stringSlice(escaped, 1, host::stringByteLength(escaped) - 2)
 end
 
 class ServerError

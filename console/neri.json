@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "defaultUnit": "console",
+  "units": {
+    "console": {
+      "kind": "executable",
+      "sources": ["main.hk", "input.hk", "presentation.hk", "completion.hk"],
+      "references": [{"project": "../startup/neri.json", "unit": "progress"}, {"project": "../build/console/runtime/share/neri/manifest.json", "unit": "session"}]
+    }
+  }
+}

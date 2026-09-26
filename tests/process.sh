@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 # Process lifecycle helpers for loopback integration fixtures.
 set -euo pipefail
+if ! command -v timeout >/dev/null 2>&1 && command -v gtimeout >/dev/null 2>&1; then
+  timeout() { gtimeout "$@"; }
+fi
 SUMI_TEST_PID=""
 SUMI_TEST_WORK="$(mktemp -d)"
 SUMI_TEST_PORT="$((20000 + BASHPID % 30000))"
 stop_server() {
   if [[ -n "$SUMI_TEST_PID" ]]; then
-    kill -TERM -- "-$SUMI_TEST_PID" 2>/dev/null || true
+    local deadline=$((SECONDS + 5))
+    kill -INT -- "-$SUMI_TEST_PID" 2>/dev/null || true
+    while kill -0 -- "-$SUMI_TEST_PID" 2>/dev/null; do
+      if (( SECONDS >= deadline )); then
+        kill -KILL -- "-$SUMI_TEST_PID" 2>/dev/null || true
+        wait "$SUMI_TEST_PID" 2>/dev/null || true
+        SUMI_TEST_PID=""
+        fail 'server process group did not stop after SIGINT'
+      fi
+      sleep 0.02
+    done
     wait "$SUMI_TEST_PID" 2>/dev/null || true
     SUMI_TEST_PID=""
   fi
@@ -18,8 +31,12 @@ start_server() {
   local ready="$1"
   shift
   : > "$SUMI_TEST_WORK/server.log"
-  setsid "$@" > "$SUMI_TEST_WORK/server.log" 2>&1 &
+  # Bash job control creates a separate process group on both macOS and Linux.
+  # Keep SIGINT enabled in the child, as for a foreground terminal command.
+  set -m
+  "$@" > "$SUMI_TEST_WORK/server.log" 2>&1 &
   SUMI_TEST_PID=$!
+  set +m
   local deadline=$((SECONDS + 10))
   until grep -qF "$ready" "$SUMI_TEST_WORK/server.log"; do
     if ! kill -0 "$SUMI_TEST_PID" 2>/dev/null || (( SECONDS >= deadline )); then

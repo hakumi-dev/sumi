@@ -1,0 +1,203 @@
+use arrays
+use host
+use http
+use sumi
+use sumiweb
+use test
+
+def requestPacket(): Void
+  let request = new sumi::Request("POST", "/echo")
+
+  request.query = "name=a%20b"
+  request.requestId = "request-42"
+  request.contentType = "application/octet-stream"
+  request.body = [0 as Byte, 255 as Byte, 13 as Byte, 10 as Byte]
+  request.headers.add("X-Repeat", "first")
+  request.headers.add("x-repeat", "second")
+  let packet = sumiweb::encodeWorkerRequest(request)
+
+  test::assertTrue(packet != null)
+  if packet == null
+    return
+  end
+  let decoded = sumiweb::decodeWorkerRequest(packet)
+
+  test::assertTrue(decoded != null)
+  if decoded != null
+    test::assertEqual(decoded.method, request.method)
+    test::assertEqual(decoded.path, request.path)
+    test::assertEqual(decoded.query, request.query)
+    test::assertEqual(decoded.contentType, request.contentType)
+    test::assertEqual(decoded.requestId, request.requestId)
+    test::assertEqual(decoded.headers.count(), 2)
+    test::assertEqual(decoded.headers.nameAt(1), "x-repeat")
+    test::assertEqual(decoded.headers.valueAt(0), "first")
+    test::assertEqual(decoded.headers.valueAt(1), "second")
+    test::assertEqual(decoded.body[0] as Int, 0)
+    test::assertEqual(decoded.body[1] as Int, 255)
+    decoded.body[0] = 42 as Byte
+
+    test::assertEqual(request.body[0] as Int, 0)
+  end
+  for length in [0, 7, 12, packet.Length - 1]
+    let truncated: Byte[] = arrays::generate(length) do |index|
+      return packet[index]
+    end
+
+    test::assertTrue(sumiweb::decodeWorkerRequest(truncated) == null)
+  end
+
+  test::assertTrue(sumiweb::decodeWorkerRequest(host::appendByte(packet, 0 as Byte)) == null)
+  let invalidText = sumi::copyBody(packet)
+
+  invalidText[12] = 255 as Byte
+
+  test::assertTrue(sumiweb::decodeWorkerRequest(invalidText) == null)
+  let hugeLength = sumi::copyBody(packet)
+  var index = 8
+
+  while index < 12
+    hugeLength[index] = 255 as Byte
+    index = index + 1
+  end
+
+  test::assertTrue(sumiweb::decodeWorkerRequest(hugeLength) == null)
+end
+
+def replyPacket(): Void
+  let response = sumi::binary([0 as Byte, 255 as Byte], "application/octet-stream")
+
+  response.headers.add("Set-Cookie", "one=1")
+  response.headers.add("Set-Cookie", "two=2")
+  let wire = sumiweb::wire(response, false, "request-42")
+  let event = new sumiweb::LogEvent("http.request.completed")
+
+  event.status = 200
+  event.method = "POST"
+  event.requestId = "request-42"
+  event.route = "/echo"
+  event.appMs = 7
+  event.message = "Réponse prête"
+  let reply = new sumiweb::WorkerReply(wire, event)
+  let packet = sumiweb::encodeWorkerReply(reply)
+
+  test::assertTrue(packet != null)
+  if packet == null
+    return
+  end
+  let decoded = sumiweb::decodeWorkerReply(packet)
+
+  test::assertTrue(decoded != null)
+  if decoded != null
+    test::assertEqual(decoded.response.headers, wire.headers)
+    test::assertEqual(decoded.response.body[0] as Int, 0)
+    test::assertEqual(decoded.response.body[1] as Int, 255)
+    test::assertEqual(decoded.event.route, "/echo")
+    test::assertEqual(decoded.event.message, event.message)
+    test::assertEqual(decoded.event.appMs, 7)
+    test::assertEqual(decoded.event.requestId, "request-42")
+  end
+  let truncated: Byte[] = arrays::generate(packet.Length - 1) do |index|
+    return packet[index]
+  end
+
+  test::assertTrue(sumiweb::decodeWorkerReply(truncated) == null)
+  test::assertTrue(sumiweb::decodeWorkerReply(host::appendByte(packet, 0 as Byte)) == null)
+  test::assertTrue(sumiweb::decodeWorkerRequest(packet) == null)
+end
+
+def replyFraming(): Void
+  let event = new sumiweb::LogEvent("http.request.completed")
+
+  event.status = 200
+  event.method = "GET"
+  let body = [255 as Byte]
+  let prefix = "HTTP/1.1 200 Response\r\n"
+
+  for fields in ["Content-Length: 2\r\n", "Content-Length: 1\r\nContent-Length: 1\r\n", "Content-Length: +1\r\n", "Content-Length: 1048577\r\n", "Transfer-Encoding: chunked\r\nContent-Length: 1\r\n", "Bad Header: value\r\nContent-Length: 1\r\n", "Content-Length: 1\r\n\r\nInjected: value\r\n", "Content-Length: 1\nInjected: value\r\n"]
+    let response = new sumiweb::WireResponse(200, prefix + fields + "\r\n", body)
+
+    test::assertTrue(sumiweb::encodeWorkerReply(new sumiweb::WorkerReply(response, event)) == null)
+  end
+  let valid = new sumiweb::WireResponse(200, prefix + "Content-Length: 1\r\n\r\n", body)
+  let packet = sumiweb::encodeWorkerReply(new sumiweb::WorkerReply(valid, event))
+
+  test::assertTrue(packet != null)
+  if packet != null
+    let lengthAt = 16 + http::find(valid.headers, "Content-Length: 1", 0) + host::stringByteLength("Content-Length: ")
+
+    packet[lengthAt] = 50 as Byte
+
+    test::assertTrue(sumiweb::decodeWorkerReply(packet) == null)
+  end
+  event.method = "HEAD"
+  let head = sumiweb::wire(sumi::binary(body, "application/octet-stream"), true, "request-head")
+  let headPacket = sumiweb::encodeWorkerReply(new sumiweb::WorkerReply(head, event))
+
+  test::assertTrue(headPacket != null)
+  if headPacket != null
+    test::assertTrue(sumiweb::decodeWorkerReply(headPacket) != null)
+  end
+  for status in [204, 205, 304]
+    event.status = status
+    event.method = "GET"
+    let response = sumiweb::wire(sumi::text("omitted", status), false, "request-empty")
+
+    test::assertTrue(sumiweb::encodeWorkerReply(new sumiweb::WorkerReply(response, event)) != null)
+    let invalid = new sumiweb::WireResponse(status, response.headers, body)
+
+    test::assertTrue(sumiweb::encodeWorkerReply(new sumiweb::WorkerReply(invalid, event)) == null)
+  end
+end
+
+def limits(): Void
+  let request = new sumi::Request("POST", "/")
+
+  request.body = arrays::generate<Byte>(1048576) do |index|
+    return 255 as Byte
+  end
+  let maximum = sumiweb::encodeWorkerRequest(request)
+
+  test::assertTrue(maximum != null)
+  if maximum != null
+    test::assertTrue(maximum.Length <= 1114112)
+  end
+  request.body = host::appendByte(request.body, 0 as Byte)
+
+  test::assertTrue(sumiweb::encodeWorkerRequest(request) == null)
+  let oversized: Byte[] = arrays::generate(1114113) do |index|
+    return 0 as Byte
+  end
+
+  test::assertTrue(sumiweb::decodeWorkerRequest(oversized) == null)
+  test::assertTrue(sumiweb::decodeWorkerReply(oversized) == null)
+end
+
+def jobSlots(): Void
+  let jobs = new sumiweb::ConcurrentJobs(3)
+
+  test::assertTrue(jobs.add(1 as UInt64, 0))
+  test::assertTrue(jobs.add(8 as UInt64, 1))
+  test::assertTrue(jobs.add(15 as UInt64, 2))
+  test::assertEqual(jobs.count(), 3)
+  test::assertTrue(jobs.take(8 as UInt64) == 1)
+  test::assertTrue(!jobs.add(1 as UInt64, 1))
+  test::assertTrue(!jobs.add(22 as UInt64, 0))
+  test::assertTrue(!jobs.add(22 as UInt64, -1))
+  test::assertTrue(!jobs.add(22 as UInt64, 3))
+  test::assertTrue(!jobs.add(0 as UInt64, 1))
+  test::assertTrue(jobs.add(22 as UInt64, 1))
+  test::assertTrue(jobs.take(1 as UInt64) == 0)
+  test::assertTrue(jobs.take(15 as UInt64) == 2)
+  test::assertTrue(jobs.take(22 as UInt64) == 1)
+  test::assertTrue(jobs.take(8 as UInt64) == null)
+  test::assertEqual(jobs.count(), 0)
+end
+
+def main(): Void
+  jobSlots()
+  requestPacket()
+  replyPacket()
+  replyFraming()
+  limits()
+end

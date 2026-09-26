@@ -1,0 +1,184 @@
+use buffers
+use host
+use json
+use result
+namespace sumi
+
+def decodeJson(request: Request, options: json::Options? = null): result::Result<json::Value, BodyFailure>
+  let contentFailure = BodyMediaType.validate(request.contentType, "application/json")
+
+  if contentFailure != null
+    return result::Result<json::Value, BodyFailure>.Error(contentFailure)
+  end
+  if request.body.Length > 1048576
+    return result::Result<json::Value, BodyFailure>.Error(new BodyFailure("body_limit", "JSON body exceeds the 1048576-byte limit"))
+  end
+  match json::parseBytes(request.body, options)
+    case result::Result.Ok(value)
+      return result::Result<json::Value, BodyFailure>.Ok(value)
+    case result::Result.Error(failure)
+      return result::Result<json::Value, BodyFailure>.Error(new BodyFailure(failure.code, "Cannot decode JSON request body", failure.offset))
+  end
+end
+
+def json(value: json::Value, status: Int = 200, options: json::Options? = null): result::Result<Response, BodyFailure>
+  let limits = new json::Options()
+
+  if options != null
+    limits.maxInputBytes = options.maxInputBytes
+    limits.maxOutputBytes = options.maxOutputBytes
+    limits.maxDepth = options.maxDepth
+    limits.maxNodes = options.maxNodes
+  end
+  if !json::validOptions(limits)
+    return result::Result<Response, BodyFailure>.Error(new BodyFailure("invalid_options", "Invalid JSON codec limits"))
+  end
+  limits.maxOutputBytes = 1048576 if limits.maxOutputBytes > 1048576
+  match json::stringify(value, limits)
+    case result::Result.Ok(body)
+      let response = text(body, status)
+
+      response.contentType = "application/json"
+      return result::Result<Response, BodyFailure>.Ok(response)
+    case result::Result.Error(failure)
+      return result::Result<Response, BodyFailure>.Error(new BodyFailure(failure.code, "Cannot encode JSON response body", failure.offset))
+  end
+end
+
+# Decode Content-Type independently of response header presentation. Parameters
+# follow token/quoted-string syntax; body codecs support UTF-8 exclusively.
+internal class BodyMediaType
+  static def validate(value: String, expected: String): BodyFailure?
+    let length = host::stringByteLength(value)
+
+    if length == 0 || length > 8192
+      return new BodyFailure("unsupported_media_type", "Expected " + expected)
+    end
+    var index = 0
+
+    while index < length && BodyMediaType.whitespace(value, index)
+      index = index + 1
+    end
+    let start = index
+
+    while index < length && mediaToken(host::stringByteAt(value, index) as Int)
+      index = index + 1
+    end
+    if index == start || index >= length || host::stringByteAt(value, index) != (47 as Byte)
+      return new BodyFailure("invalid_content_type", "Expected a media type and subtype", index)
+    end
+    index = index + 1
+    let subtype = index
+
+    while index < length && mediaToken(host::stringByteAt(value, index) as Int)
+      index = index + 1
+    end
+    if index == subtype
+      return new BodyFailure("invalid_content_type", "Missing media subtype", index)
+    end
+    let media = http::lower(host::stringSlice(value, start, index - start))
+    var matches = media == expected
+
+    if expected == "application/json" && host::stringByteLength(media) > 17
+      matches = matches || (host::stringSlice(media, 0, 12) == "application/" && host::stringSlice(media, host::stringByteLength(media) - 5, 5) == "+json")
+    end
+    if !matches
+      return new BodyFailure("unsupported_media_type", "Expected " + expected)
+    end
+    var charsetSeen = false
+
+    while index < length
+      while index < length && BodyMediaType.whitespace(value, index)
+        index = index + 1
+      end
+      if index == length
+        return null
+      end
+      if host::stringByteAt(value, index) != (59 as Byte)
+        return new BodyFailure("invalid_content_type", "Expected a parameter separator", index)
+      end
+      index = index + 1
+      while index < length && BodyMediaType.whitespace(value, index)
+        index = index + 1
+      end
+      if index == length
+        return null
+      end
+      if host::stringByteAt(value, index) == (59 as Byte)
+        continue
+      end
+      let nameStart = index
+
+      while index < length && mediaToken(host::stringByteAt(value, index) as Int)
+        index = index + 1
+      end
+      if index == nameStart || index >= length || host::stringByteAt(value, index) != (61 as Byte)
+        return new BodyFailure("invalid_content_type", "Expected a parameter name and equals sign", index)
+      end
+      let name = http::lower(host::stringSlice(value, nameStart, index - nameStart))
+
+      index = index + 1
+      let content = buffers::ByteBuffer.create(length)
+
+      if content == null
+        return new BodyFailure("invalid_content_type", "Content-Type exceeds its limit", index)
+      end
+      if index < length && host::stringByteAt(value, index) == (34 as Byte)
+        index = index + 1
+        var closed = false
+
+        while index < length && !closed
+          var byte = host::stringByteAt(value, index) as Int
+
+          index = index + 1
+          if byte == 34
+            closed = true
+          else
+            if byte == 92
+              if index >= length
+                return new BodyFailure("invalid_content_type", "Incomplete quoted escape", index)
+              end
+              byte = host::stringByteAt(value, index) as Int
+              index = index + 1
+            end
+            if (byte < 32 && byte != 9) || byte > 126
+              return new BodyFailure("invalid_content_type", "Invalid parameter character", index - 1)
+            end
+            content.append(byte as Byte)
+          end
+        end
+        if !closed
+          return new BodyFailure("invalid_content_type", "Unterminated quoted parameter", index)
+        end
+      else
+        let valueStart = index
+
+        while index < length && mediaToken(host::stringByteAt(value, index) as Int)
+          content.append(host::stringByteAt(value, index))
+          index = index + 1
+        end
+        if index == valueStart
+          return new BodyFailure("invalid_content_type", "Missing parameter value", index)
+        end
+      end
+      if name == "charset"
+        if charsetSeen
+          return new BodyFailure("invalid_content_type", "Repeated charset parameter", nameStart)
+        end
+        charsetSeen = true
+        let charset = content.text()
+
+        if charset == null || http::lower(charset) != "utf-8"
+          return new BodyFailure("unsupported_charset", "Body codecs require UTF-8", nameStart)
+        end
+      end
+    end
+    return null
+  end
+
+  private static def whitespace(value: String, index: Int): Bool
+    let byte = host::stringByteAt(value, index)
+
+    return byte == (32 as Byte) || byte == (9 as Byte)
+  end
+end

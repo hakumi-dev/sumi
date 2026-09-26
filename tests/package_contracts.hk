@@ -1,0 +1,414 @@
+use host
+use console
+use clock
+use process
+use files
+use result
+use buffers
+use distribution
+
+def assertTrue(value: Bool, message: String): Void
+  if !value
+    distribution::fail("Contract failed: " + message)
+  end
+end
+
+def contains(text: String, fragment: String): Bool
+  var index = 0
+  let size = host::stringByteLength(fragment)
+
+  while index + size <= host::stringByteLength(text)
+    if matches(text, fragment, index)
+      return true
+    end
+    index = index + 1
+  end
+  return false
+end
+
+def matches(text: String, fragment: String, offset: Int): Bool
+  var index = 0
+
+  while index < host::stringByteLength(fragment)
+    if host::stringByteAt(text, offset + index) != host::stringByteAt(fragment, index)
+      return false
+    end
+    index = index + 1
+  end
+  return true
+end
+
+def replaceOnce(text: String, old: String, replacement: String): String
+  var index = 0
+  let length = host::stringByteLength(text)
+  let size = host::stringByteLength(old)
+
+  while index + size <= length
+    if matches(text, old, index)
+      return host::stringSlice(text, 0, index) + replacement + host::stringSlice(text, index + size, length - index - size)
+    end
+    index = index + 1
+  end
+  distribution::fail("Fixture replacement not found")
+  return text
+end
+
+def occurrences(text: String, fragment: String): Int
+  var count = 0
+  var index = 0
+  let size = host::stringByteLength(fragment)
+
+  while index + size <= host::stringByteLength(text)
+    if matches(text, fragment, index)
+      count = count + 1
+    end
+    index = index + 1
+  end
+  return count
+end
+
+def now(): Int
+  let value = clock::milliseconds()
+
+  if value == null
+    distribution::fail("Monotonic clock unavailable")
+    return 0
+  end
+  return value
+end
+
+def bytes(text: String): Byte[]
+  let buffer = buffers::ByteBuffer.create(host::stringByteLength(text))
+
+  if buffer == null || !buffer.appendText(text)
+    distribution::fail("Cannot encode input")
+    return []
+  end
+  return buffer.snapshot()
+end
+
+class Run
+  public text: String = ""
+  public error: String = ""
+  public status: Int = -1
+  public ready: Int = -1
+  public elapsed: Int = 0
+end
+
+def run(options: process::SpawnOptions): Run
+  let started = now()
+  let child = process::spawn(options).child()
+
+  if child == null
+    distribution::fail("Cannot spawn " + options.executable)
+    return new Run()
+  end
+  let output = new Run()
+
+  while now() - started < 60000
+    let polled = child.wait(1)
+    let text = host::stringFromBytes(polled.stdout)
+    let error = host::stringFromBytes(polled.stderr)
+
+    if polled.failure != null || text == null || error == null || polled.stdoutTruncated || polled.stderrTruncated
+      let cancelled = child.cancel()
+      let disposed = child.dispose()
+
+      distribution::fail("Cannot capture child")
+      return output
+    end
+    output.text = text
+    output.error = error
+    if output.ready < 0 && contains(text, "Sumi console · :help")
+      output.ready = now() - started
+    end
+    if !polled.running
+      let status = polled.exit
+
+      if status != null
+        output.status = status.value()
+      end
+      output.elapsed = now() - started
+      let disposed = child.dispose()
+
+      assertTrue(disposed, "dispose process")
+      return output
+    end
+  end
+  let cancelled = child.cancel()
+  let disposed = child.dispose()
+
+  distribution::fail("Child timed out")
+  return output
+end
+
+def options(command: String, args: String[], neri: String): process::SpawnOptions
+  let value = new process::SpawnOptions(command)
+
+  value.arguments = args
+  value.environment = [new process::EnvironmentEntry("NERI", neri), new process::EnvironmentEntry("SUMI_CONSOLE_TIMINGS", "1"), new process::EnvironmentEntry("TERM", "dumb")]
+  return value
+end
+
+def session(cli: String, project: String, source: String, neri: String, cache: String, label: String): Run
+  let timingFlag = trimLine(capture("uname", ["-s"])) == "Darwin" ? "-l" : "-v"
+  let config = options("/usr/bin/time", [timingFlag, cli, "c", "--project", project], neri)
+
+  config.input = bytes(source)
+  config.environment = [new process::EnvironmentEntry("NERI", neri), new process::EnvironmentEntry("SUMI_CONSOLE_TIMINGS", "1"), new process::EnvironmentEntry("TERM", "dumb"), new process::EnvironmentEntry("NERI_CACHE_DIR", cache)]
+  let output = run(config)
+
+  console::println(label + " ready=" + (output.ready as String) + "ms total=" + (output.elapsed as String) + "ms")
+  console::println(output.text)
+  console::println(output.error)
+
+  assertTrue(output.status == 0 && output.ready >= 0, label + " opens")
+  return output
+end
+
+def initializeSource(marker: String): String
+  return "use sumi\nuse console\n\ndef consoleApp(): sumi::App\n  console::println(\"" + marker + "\")\n  return new sumi::App()\nend\n\ndef main(): Void\n  console::println(\"FORBIDDEN_MAIN\")\nend\n"
+end
+
+def nativeSqliteSource(): String
+  return "use sumi\nuse console\n\n@library(\"sqlite3\")\n@cabiImport(\"sqlite3_libversion_number\")\nunsafe def sqliteVersion(): Int32\nend\n\ndef consoleApp(): sumi::App\n  unsafe\n    if sqliteVersion() > (0 as Int32)\n      console::println(\"SQLITE_NATIVE_OK\")\n    end\n  end\n  return new sumi::App()\nend\n"
+end
+
+def installConfig(package: String, prefix: String, neri: String): process::SpawnOptions
+  return options(package + "/install.sh", ["--prefix", prefix], neri)
+end
+
+def toolchainResolution(package: String, work: String): Void
+  let toolchain = new distribution::Toolchain()
+  let launcher = work + "/outside-launcher/neri"
+
+  distribution::operation(files::createDirectory(distribution::parent(launcher), true))
+  distribution::write(launcher, "#!/bin/sh\nif [ \"$1\" = \"--print-runtime-manifest\" ] && [ -n \"$NERI_BAD_MANIFEST\" ]; then\n  printf '%s\\n' \"$NERI_BAD_MANIFEST\"\n  exit 0\nfi\nexec \"$NERI_REAL_COMPILER\" \"$@\"\n")
+  distribution::checked("chmod", ["+x", launcher])
+  let goodOptions = new process::SpawnOptions(package + "/libexec/sumi-package")
+
+  goodOptions.arguments = ["check", package]
+  goodOptions.environment = [new process::EnvironmentEntry("NERI", launcher), new process::EnvironmentEntry("NERI_REAL_COMPILER", toolchain.command), new process::EnvironmentEntry("NERI_BAD_MANIFEST", "")]
+  let good = run(goodOptions)
+
+  assertTrue(good.status == 0, "outside-package launcher forwards runtime manifest for compatible package check: " + good.text + good.error)
+  let badOptions = new process::SpawnOptions(package + "/libexec/sumi-package")
+
+  badOptions.arguments = ["check", package]
+  badOptions.environment = [new process::EnvironmentEntry("NERI", launcher), new process::EnvironmentEntry("NERI_REAL_COMPILER", toolchain.command), new process::EnvironmentEntry("NERI_BAD_MANIFEST", work + "/missing-runtime.json")]
+  let bad = run(badOptions)
+  let diagnostic = bad.text + bad.error
+
+  assertTrue(bad.status != 0 && contains(diagnostic, "SUMI_CONSOLE_TOOLCHAIN"), "invalid reported runtime manifest rejected clearly: " + diagnostic)
+end
+
+def main(): Void
+  let packageArg = host::argumentAt(0)
+  let workArg = host::argumentAt(1)
+
+  if packageArg != null && packageArg == "--toolchain-resolution"
+    let work = host::argumentAt(2)
+
+    if workArg == null || work == null
+      distribution::fail("Usage: package-contracts --toolchain-resolution <package> <work>")
+      return
+    end
+    toolchainResolution(distribution::absolute(workArg), distribution::absolute(work))
+    console::println("Sumi toolchain resolution contract passed")
+    return
+  end
+
+  if packageArg != null && packageArg == "--benchmark" && workArg != null
+    let project = host::argumentAt(2)
+    let cache = host::argumentAt(3)
+
+    if project == null || cache == null
+      distribution::fail("Usage: package-contracts --benchmark <sumi> <project> <new-cache-directory>")
+      return
+    end
+    let toolchain = new distribution::Toolchain()
+    let first = session(workArg, project, ":exit\n", toolchain.command, cache, "demo fresh cache")
+    let second = session(workArg, project, ":exit\n", toolchain.command, cache, "demo warm 1")
+    let third = session(workArg, project, ":exit\n", toolchain.command, cache, "demo warm 2")
+    let incremental = session(workArg, project, "let variable = 123\nvar changing = 10\nchanging = changing + 1\nchanging\nconsole::println(variable as String)\n:exit\n", toolchain.command, cache, "demo incremental")
+
+    return
+  end
+
+  if packageArg == null || workArg == null
+    distribution::fail("Usage: package-contracts <binary-package> <new-work-directory>")
+    return
+  end
+  let package = distribution::absolute(packageArg)
+  let work = distribution::absolute(workArg)
+  let toolchain = new distribution::Toolchain()
+
+  distribution::operation(files::createDirectory(work))
+  toolchainResolution(package, work + "/resolution")
+  let fake = work + "/toolchain"
+
+  distribution::operation(files::createDirectory(fake + "/bin", true))
+  # The public compiler is unusable: package installation and console startup
+  # must use prebuilt frontends. The internal compiler remains for app modules.
+  distribution::checked("cp", ["/usr/bin/false", fake + "/bin/neri"])
+  for name in ["lib", "libexec", "stdlib", "ARTIFACTS.sha256"]
+    distribution::checked("ln", ["-s", toolchain.root + "/" + name, fake + "/" + name])
+  end
+  # No compiler/session SDK sources are available in this consumer toolchain.
+  distribution::operation(files::createDirectory(fake + "/share/neri", true))
+  distribution::checked("cp", [toolchain.root + "/share/neri/manifest.json", fake + "/share/neri/manifest.json"])
+  distribution::checked("ln", ["-s", toolchain.root + "/bin/neri-codegen", fake + "/bin/neri-codegen"])
+  let neri = fake + "/bin/neri"
+  let prefix = work + "/installed"
+  let recursive = run(installConfig(package, package + "/recursive-install", neri))
+
+  assertTrue(recursive.status != 0 && !distribution::exists(package + "/recursive-install"), "recursive installation rejected without mutation")
+  let alias = work + "/package-alias"
+
+  distribution::checked("ln", ["-s", package, alias])
+  let aliased = run(installConfig(package, alias + "/recursive-install", neri))
+
+  assertTrue(aliased.status != 0 && !distribution::exists(package + "/recursive-install"), "symlink cannot hide recursive destination")
+  let installed = run(installConfig(package, prefix, neri))
+
+  console::println("clean installation=" + (installed.elapsed as String) + "ms")
+
+  assertTrue(installed.status == 0, "install with public compiler disabled: " + installed.text)
+  let app = work + "/app"
+
+  distribution::operation(files::createDirectory(app))
+  distribution::checked("cp", ["-R", package + "/src/core", app + "/core"])
+  distribution::write(app + "/neri.json", "{\"version\":2,\"defaultUnit\":\"web\",\"units\":{\"core\":{\"kind\":\"library\",\"sources\":[\"core\"]},\"web\":{\"kind\":\"executable\",\"sources\":[\"main.hk\"],\"references\":[\"core\"]}}}\n")
+  distribution::write(app + "/sumi.conf", "server=web\ntest=web\npublic=public\n")
+  distribution::write(app + "/main.hk", initializeSource("INITIALIZED_V1"))
+  let cli = prefix + "/bin/sumi"
+  let first = session(cli, app, ":exit\n", neri, work + "/cache", "fresh cache")
+  let warm = session(cli, app, ":exit\n", neri, work + "/cache", "warm cache")
+
+  assertTrue(occurrences(first.text, "INITIALIZED_V1") == 1 && occurrences(warm.text, "INITIALIZED_V1") == 1, "initialize every session")
+  assertTrue(!contains(first.text, "Analyzing ") && !contains(warm.text, "Reusing compiled module.") && !contains(first.text, "Generating native code"), "redirected console keeps startup progress quiet")
+  let sqliteApp = work + "/sqlite-app"
+
+  distribution::operation(files::createDirectory(sqliteApp))
+  distribution::checked("cp", ["-R", package + "/src/core", sqliteApp + "/core"])
+  distribution::write(sqliteApp + "/neri.json", "{\"version\":2,\"defaultUnit\":\"web\",\"units\":{\"core\":{\"kind\":\"library\",\"sources\":[\"core\"]},\"web\":{\"kind\":\"executable\",\"sources\":[\"main.hk\"],\"references\":[\"core\"]}}}\n")
+  distribution::write(sqliteApp + "/sumi.conf", "server=web\ntest=web\npublic=public\n")
+  distribution::write(sqliteApp + "/main.hk", nativeSqliteSource())
+  let sqlite = session(cli, sqliteApp, ":exit\n", neri, work + "/sqlite-cache", "native sqlite symbol")
+
+  assertTrue(contains(sqlite.text, "SQLITE_NATIVE_OK"), "console JIT resolves symbols from linked sqlite library")
+  let state = session(cli, app, "let variable = 123\nvar changing = 10\nchanging = changing + 1\nchanging\nconsole::println(\"EFFECT_ONCE\")\nvariable\n:reset\nvariable\n:exit\n", neri, work + "/cache", "incremental and reset")
+
+  assertTrue(contains(state.text, "=> 11") && contains(state.text, "=> 123"), "persistent bindings and mutation")
+  assertTrue(occurrences(state.text, "EFFECT_ONCE") == 1, "effect executes once")
+  assertTrue(occurrences(state.text, "INITIALIZED_V1") == 2 && contains(state.text, "Undefined name 'variable'"), "reset reinitializes and clears state")
+  assertTrue(!contains(state.text, "FORBIDDEN_MAIN"), "main is not invoked")
+  let isolated = session(cli, app, "variable\n:exit\n", neri, work + "/cache", "isolation")
+
+  assertTrue(contains(isolated.text, "Undefined name 'variable'"), "session state is independent")
+  let binary = trimLine(capture("realpath", [cli]))
+  let generation = distribution::parent(distribution::parent(binary))
+  let consoleHash = distribution::digest(generation + "/libexec/sumi-console")
+
+  distribution::write(app + "/main.hk", initializeSource("INITIALIZED_V2"))
+  let changed = session(cli, app, ":exit\n", neri, work + "/cache", "app edit")
+
+  assertTrue(contains(changed.text, "INITIALIZED_V2"), "new app source initialized")
+  assertTrue(distribution::digest(generation + "/libexec/sumi-console") == consoleHash, "app edit does not change frontend")
+
+  # Two unique stages publish whole generations; either winner is valid.
+  let a = process::spawn(installConfig(package, prefix, neri)).child()
+  let b = process::spawn(installConfig(package, prefix, neri)).child()
+
+  if a == null || b == null
+    distribution::fail("Cannot start concurrent installers")
+    return
+  end
+  let during = session(cli, app, ":exit\n", neri, work + "/cache", "launch during installation")
+  let doneA = a.wait(60000).exit
+  let doneB = b.wait(60000).exit
+  let disposedA = a.dispose()
+  let disposedB = b.dispose()
+
+  assertTrue(doneA != null && doneA.value() == 0 && doneB != null && doneB.value() == 0 && disposedA && disposedB, "concurrent installs")
+  let afterConcurrent = session(cli, app, ":exit\n", neri, work + "/cache", "concurrent update")
+  let updated = work + "/updated-package"
+
+  distribution::checked("cp", ["-R", package, updated])
+  distribution::write(updated + "/package.json", distribution::textAt(updated + "/package.json") + "\n")
+  distribution::write(updated + "/ARTIFACTS.sha256", distribution::treeManifest(updated))
+  let upgrade = run(installConfig(updated, prefix, neri))
+
+  assertTrue(upgrade.status == 0 && distribution::exists(generation), "Sumi update preserves previous generation")
+  let current = distribution::parent(distribution::parent(trimLine(capture("realpath", [cli]))))
+
+  assertTrue(distribution::digest(current + "/ARTIFACTS.sha256") == distribution::digest(updated + "/ARTIFACTS.sha256"), "new generation activated")
+  let afterUpdate = session(cli, app, ":exit\n", neri, work + "/cache", "Sumi update")
+  let activeLink = capture("readlink", [cli])
+
+  distribution::write(updated + "/libexec/sumi-console", "corrupt package\n")
+  let rejectedInstall = run(installConfig(updated, prefix, neri))
+
+  assertTrue(rejectedInstall.status != 0 && capture("readlink", [cli]) == activeLink, "failed update preserves active command")
+
+  # Same version, different toolchain contents must still be rejected quickly.
+  distribution::operation(files::removeFile(fake + "/ARTIFACTS.sha256"))
+  distribution::write(fake + "/ARTIFACTS.sha256", distribution::textAt(toolchain.root + "/ARTIFACTS.sha256") + "\n")
+  let incompatible = run(options(cli, ["c", "--project", app], neri))
+
+  assertTrue(incompatible.status != 0 && contains(incompatible.text, "SUMI_CONSOLE_INCOMPATIBLE") && incompatible.elapsed < 3000, "Neri update requires a matching binary package")
+  distribution::write(fake + "/ARTIFACTS.sha256", distribution::textAt(toolchain.root + "/ARTIFACTS.sha256"))
+  distribution::operation(files::removeFile(fake + "/lib"))
+  distribution::operation(files::createDirectory(fake + "/lib"))
+  distribution::write(fake + "/lib/neri-runtime.json", replaceOnce(distribution::textAt(toolchain.root + "/lib/neri-runtime.json"), "\"abiMajor\": 1", "\"abiMajor\": 999"))
+  let wrongAbi = run(options(cli, ["c", "--project", app], neri))
+
+  assertTrue(wrongAbi.status != 0 && contains(wrongAbi.text, "SUMI_CONSOLE_INCOMPATIBLE"), "runtime ABI mismatch rejected")
+  distribution::operation(files::removeTree(fake + "/lib"))
+  distribution::checked("ln", ["-s", toolchain.root + "/lib", fake + "/lib"])
+  distribution::write(current + "/libexec/sumi-console", "corrupt\n")
+  let corrupt = run(options(cli, ["c", "--project", app], neri))
+
+  assertTrue(corrupt.status != 0 && contains(corrupt.text, "SUMI_PACKAGE_CORRUPT"), "corrupt frontend rejected")
+  distribution::operation(files::removeFile(current + "/libexec/sumi-console"))
+  let missing = run(options(cli, ["c", "--project", app], neri))
+
+  assertTrue(missing.status != 0 && contains(missing.text, "SUMI_PACKAGE_CORRUPT"), "missing frontend rejected")
+  let repair = run(installConfig(package, prefix, neri))
+
+  assertTrue(repair.status == 0, "reinstall repairs without modifying corrupt generation")
+
+  let checkout = host::argumentAt(2)
+
+  if checkout != null
+    let fixture = work + "/checkout"
+
+    distribution::operation(files::createDirectory(fixture))
+    for name in ["cli", "console", "src", "templates", "tooling", "package.json"]
+      distribution::checked("cp", ["-R", checkout + "/" + name, fixture + "/" + name])
+    end
+    let source = fixture + "/console/main.hk"
+
+    distribution::write(source, replaceOnce(distribution::textAt(source), " · :help", " · :help [updated frontend]"))
+    let built = run(options(package + "/libexec/sumi-package", ["build", fixture], toolchain.command))
+
+    assertTrue(built.status == 0, "build changed Sumi frontend: " + built.text + built.error)
+    let newPackage = trimLine(distribution::textAt(fixture + "/build/latest-package"))
+    let unpack = fixture + "/unpacked"
+
+    distribution::operation(files::createDirectory(unpack))
+    distribution::checked("tar", ["-xzf", newPackage + ".tar.gz", "-C", unpack])
+    let id = distribution::digest(newPackage + "/ARTIFACTS.sha256")
+    let changedInstall = run(installConfig(unpack + "/" + id, prefix, neri))
+
+    assertTrue(changedInstall.status == 0, "install changed frontend without compiler")
+    let changedFrontend = session(cli, app, ":exit\n", neri, work + "/cache", "Sumi source update")
+
+    assertTrue(contains(changedFrontend.text, "[updated frontend]"), "new compiled Sumi source executes")
+    assertTrue(distribution::digest(newPackage + "/libexec/sumi-console") != consoleHash, "new frontend binary distributed")
+    let restored = run(installConfig(package, prefix, neri))
+
+    assertTrue(restored.status == 0, "rollback installs complete prior package")
+  end
+  console::println("Sumi binary package contracts passed; fixtures and measurements: " + work)
+end

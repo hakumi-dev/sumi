@@ -19,9 +19,20 @@ fi
 
 # Resolve the installation once so a launcher symlink update cannot switch it
 # halfway through a compatibility run.
-export NERI="$(readlink -f -- "$(command -v "$SUMI_COMPILER")")"
+source "$SUMI_ROOT/scripts/prerequisites.sh"
+require_tool readlink 'Install a readlink implementation supporting -f.'
+if ! NERI="$(readlink -f -- "$(command -v "$SUMI_COMPILER")")"; then
+  printf 'SUMI_PREREQUISITE: readlink must support -f. See docs/COMPATIBILITY.md.\n' >&2
+  exit 1
+fi
+export NERI
 printf 'Compiler: %s\n' "$NERI"
-sha256sum -- "$NERI"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -- "$NERI"
+else
+  require_tool shasum 'Install shasum or GNU coreutils for SHA-256 reporting.'
+  shasum -a 256 -- "$NERI"
+fi
 
 if ! "$NERI" --version; then
   printf 'SUMI_COMPAT_COMPILER: Cannot read the compiler version. Check the selected Neri installation.\n' >&2

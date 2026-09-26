@@ -1,0 +1,27 @@
+use host
+use clock
+use result
+
+def waitMarker(path: String): Bool
+  let polling = http::PollSet.create(0)
+  let started = clock::milliseconds()
+
+  if polling == null || started == null
+    return false
+  end
+  while host::readText(path) != "ready"
+    let now = clock::milliseconds()
+
+    if now == null || now - started >= 5000
+      return false
+    end
+    unsafe
+      match polling.wait(10)
+        case result::Result.Ok(value)
+        case result::Result.Error(failure)
+          return false
+      end
+    end
+  end
+  return true
+end

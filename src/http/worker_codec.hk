@@ -1,0 +1,235 @@
+use host
+use sumi
+namespace sumiweb
+
+# Version 1 packets use unsigned big-endian 32-bit lengths and strict UTF-8
+# strings. Bodies are copied as bytes. Only response diagnostics cross workers;
+# socket timing and database logging remain with their respective owners.
+def validWorkerRequest(request: sumi::Request): Bool
+  if host::stringByteLength(request.method) > 32 || host::stringByteLength(request.path) > 8192 || host::stringByteLength(request.query) > 8192 || host::stringByteLength(request.contentType) > 8192 || host::stringByteLength(request.requestId) > 128 || request.body.Length > 1048576
+    return false
+  end
+  let target = request.path + (request.query == "" ? "" : "?" + request.query)
+
+  return sumi::supportedMethod(request.method) && http::targetValid(target) && http::fieldValue(request.requestId)
+end
+
+def encodeWorkerRequest(request: sumi::Request): Byte[]?
+  if !validWorkerRequest(request)
+    return null
+  end
+  let writer = new WorkerPacketWriter()
+
+  writer.number(1)
+  writer.number(1)
+  writer.string(request.method, 32)
+  writer.string(request.path, 8192)
+  writer.string(request.query, 8192)
+  writer.string(request.contentType, 8192)
+  writer.string(request.requestId, 128)
+  writer.number(request.headers.count())
+  var index = 0
+
+  while index < request.headers.count()
+    writer.string(request.headers.nameAt(index), 7168)
+    writer.string(request.headers.valueAt(index), 7168)
+    index = index + 1
+  end
+  writer.bytes(request.body, 1048576)
+  return writer.finish()
+end
+
+def decodeWorkerRequest(bytes: Byte[]): sumi::Request?
+  let reader = new WorkerPacketReader(bytes)
+
+  if reader.number() != 1 || reader.number() != 1
+    return null
+  end
+  let method = reader.string(32)
+  let path = reader.string(8192)
+  let query = reader.string(8192)
+  let contentType = reader.string(8192)
+  let requestId = reader.string(128)
+  let count = reader.number()
+
+  if method == null || path == null || query == null || contentType == null || requestId == null || count < 0 || count > 64
+    return null
+  end
+  let request = new sumi::Request(method, path)
+
+  request.query = query
+  request.contentType = contentType
+  request.requestId = requestId
+  var index = 0
+
+  while index < count
+    let name = reader.string(7168)
+    let value = reader.string(7168)
+
+    if name == null || value == null || !request.headers.add(name, value)
+      return null
+    end
+    index = index + 1
+  end
+  let body = reader.bytes(1048576)
+
+  if body == null || !reader.complete() || !validWorkerRequest(request)
+    return null
+  end
+  request.body = body
+  return request
+end
+
+def validWorkerWire(response: WireResponse, method: String): Bool
+  let headers = response.headers
+  let size = host::stringByteLength(headers)
+  let prefix = "HTTP/1.1 " + (response.status as String) + " "
+  let prefixSize = host::stringByteLength(prefix)
+
+  if response.status < 200 || response.status > 599 || size < prefixSize + 4 || size > 16384 || response.body.Length > 1048576 || host::stringSlice(headers, 0, prefixSize) != prefix
+    return false
+  end
+  let firstEnd = http::find(headers, "\r\n", prefixSize)
+
+  if firstEnd < 0 || !http::fieldValue(host::stringSlice(headers, prefixSize, firstEnd - prefixSize))
+    return false
+  end
+  var position = firstEnd + 2
+  var length: Int? = null
+  var ended = false
+
+  while position < size && !ended
+    let lineEnd = http::find(headers, "\r\n", position)
+
+    if lineEnd < 0
+      return false
+    end
+    if lineEnd == position
+      ended = true
+      position = position + 2
+    else
+      let field = host::stringSlice(headers, position, lineEnd - position)
+      let colon = http::find(field, ":", 0)
+
+      if colon <= 0
+        return false
+      end
+      let name = host::stringSlice(field, 0, colon)
+      let value = http::trim(host::stringSlice(field, colon + 1, host::stringByteLength(field) - colon - 1))
+
+      if !http::token(name) || !http::fieldValue(value)
+        return false
+      end
+      var normalized = ""
+      let nameSize = host::stringByteLength(name)
+
+      normalized = http::lower(name) if nameSize == 14 || nameSize == 17
+
+      if normalized == "transfer-encoding"
+        return false
+      else if normalized == "content-length"
+        if length != null || value == ""
+          return false
+        end
+        var parsed = 0
+        var index = 0
+
+        while index < host::stringByteLength(value)
+          let digit = (host::stringByteAt(value, index) as Int) - 48
+
+          if digit < 0 || digit > 9
+            return false
+          end
+          parsed = parsed * 10 + digit
+          if parsed > 1048576
+            return false
+          end
+          index = index + 1
+        end
+        length = parsed
+      end
+      position = lineEnd + 2
+    end
+  end
+  if !ended || position != size
+    return false
+  end
+  if response.status == 204 || response.status == 304
+    return length == null && response.body.Length == 0
+  end
+  if response.status == 205
+    return length == 0 && response.body.Length == 0
+  end
+  if method == "HEAD"
+    return length != null && response.body.Length == 0
+  end
+  return length != null && length == response.body.Length
+end
+
+def encodeWorkerReply(reply: WorkerReply): Byte[]?
+  let response = reply.response
+  let event = reply.event
+
+  if !validWorkerWire(response, event.method) || event.status != response.status || event.appMs < -1 || levelRank(event.level) < 0
+    return null
+  end
+  let writer = new WorkerPacketWriter()
+
+  writer.number(1)
+  writer.number(2)
+  writer.number(response.status)
+  writer.string(response.headers, 16384)
+  writer.bytes(response.body, 1048576)
+  writer.string(event.event, 64)
+  writer.string(event.level, 16)
+  writer.string(event.requestId, 128)
+  writer.string(event.method, 32)
+  writer.string(event.path, 8192)
+  writer.string(event.route, 8192)
+  writer.string(event.code, 1024)
+  writer.string(event.message, 16384)
+  writer.string(event.appMs as String, 24)
+  return writer.finish()
+end
+
+def decodeWorkerReply(bytes: Byte[]): WorkerReply?
+  let reader = new WorkerPacketReader(bytes)
+
+  if reader.number() != 1 || reader.number() != 2
+    return null
+  end
+  let status = reader.number()
+  let headers = reader.string(16384)
+  let body = reader.bytes(1048576)
+  let name = reader.string(64)
+  let level = reader.string(16)
+  let requestId = reader.string(128)
+  let method = reader.string(32)
+  let path = reader.string(8192)
+  let route = reader.string(8192)
+  let code = reader.string(1024)
+  let message = reader.string(16384)
+  let elapsed = reader.string(24)
+
+  if headers == null || body == null || name == null || level == null || requestId == null || method == null || path == null || route == null || code == null || message == null || elapsed == null || !reader.complete()
+    return null
+  end
+  let appMs = host::parseInt(elapsed)
+  let response = new WireResponse(status, headers, body)
+
+  if appMs == null || appMs < -1 || !validWorkerWire(response, method) || levelRank(level) < 0
+    return null
+  end
+  let event = new LogEvent(name)
+
+  event.status = status
+  event.appMs = appMs
+  event.level = level
+  event.requestId = requestId
+  event.method = method
+  event.path = path
+  event.route = route
+  event.code = code
+  event.message = message
+  return new WorkerReply(response, event)
+end

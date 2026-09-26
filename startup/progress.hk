@@ -1,0 +1,103 @@
+use buffers
+
+@library("sumi-startup")
+@cabiImport("sumi_startup_terminal")
+unsafe def startupTerminal(): Int
+end
+
+@library("sumi-startup")
+@cabiImport("sumi_startup_progress")
+unsafe def startupProgressOutput(text: Byte*, length: Int): Int
+end
+
+@library("sumi-startup")
+@cabiImport("sumi_startup_progress_clear")
+unsafe def startupProgressOutputClear(): Int
+end
+
+def startupInteractive(): Bool
+  unsafe
+    return startupTerminal() != 0
+  end
+end
+
+def showStartupProgress(text: String): Void
+  let buffer = buffers::ByteBuffer.create(4096)
+
+  if buffer == null || !buffer.appendText(text)
+    return
+  end
+  let bytes = buffer.snapshot()
+
+  unsafe
+    borrow bytes as pointer
+      let shown = startupProgressOutput(pointer, bytes.Length)
+    end
+  end
+end
+
+def clearStartupProgress(): Void
+  unsafe
+    let cleared = startupProgressOutputClear()
+  end
+end
+
+def startupPhaseText(phase: String, projectSources: Int, librarySources: Int): String
+  if phase == "project"
+    return "Loading application project..."
+  else if phase == "analyze"
+    return "Analyzing " + (projectSources as String) + " application sources..."
+  else if phase == "compile"
+    return "Preparing " + (projectSources as String) + " application and " + (librarySources as String) + " library sources..."
+  else if phase == "cache-check"
+    return "Checking compiled module cache..."
+  else if phase == "cache-hit"
+    return "Reusing compiled module."
+  else if phase == "lower"
+    return "Preparing application code..."
+  else if phase == "codegen"
+    return "Generating native code..."
+  else if phase == "link"
+    return "Linking native module..."
+  else if phase == "load"
+    return ""
+  end
+  return "Starting application..."
+end
+
+def startupNativeProgressText(phase: String, completed: Int, total: Int, detail: String): String
+  if phase == "lower"
+    return "Generating native code (" + (completed as String) + "/" + (total as String) + "): " + detail
+  else if phase == "verify"
+    return "Checking generated code..."
+  else if phase == "optimize"
+    return "Optimizing generated code..."
+  else if phase == "emit"
+    return "Emitting native code..."
+  end
+  return ""
+end
+
+def startupProgress(phase: String, projectSources: Int, librarySources: Int): Void
+  if phase == "load" || phase == "link"
+    clearStartupProgress()
+    return
+  end
+  let text = startupPhaseText(phase, projectSources, librarySources)
+
+  if text != ""
+    showStartupProgress(text)
+  end
+end
+
+def startupNativeProgress(phase: String, completed: Int, total: Int, detail: String): Void
+  if phase == "end"
+    clearStartupProgress()
+    return
+  end
+  let text = startupNativeProgressText(phase, completed, total, detail)
+
+  if text != ""
+    showStartupProgress(text)
+  end
+end

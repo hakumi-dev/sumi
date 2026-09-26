@@ -1,0 +1,165 @@
+use host
+use tasks
+
+# A bounded VT output observer for ASCII prompt/menu geometry in PTY tests.
+# It models visible cells, unlike searching the raw stream for repeated prompts.
+class ConsoleScreen
+  public duplicatePrompt: Bool = false
+  public maxScrollItems: Int = 0
+  private cells: Int[]
+  private row: Int = 0
+  private column: Int = 0
+  private state: Int = 0
+  private number: Int = 0
+  private first: Int = -1
+
+  def init(): Void
+    this.cells = tasks::generate(2400, 1) do |index|
+      return 32
+    end
+  end
+
+  private def lineFeed(): Void
+    if this.row < 23
+      this.row = this.row + 1
+    else
+      var index = 0
+
+      while index < 2300
+        this.cells[index] = this.cells[index + 100]
+        index = index + 1
+      end
+      while index < 2400
+        this.cells[index] = 32
+        index = index + 1
+      end
+    end
+  end
+
+  private def matches(row: Int, column: Int, text: String): Bool
+    let size = host::stringByteLength(text)
+    var index = 0
+
+    if column < 0 || column + size > 100
+      return false
+    end
+    while index < size
+      if this.cells[row * 100 + column + index] != host::stringByteAt(text, index) as Int
+        return false
+      end
+      index = index + 1
+    end
+    return true
+  end
+
+  private def inspect(): Void
+    if this.matches(this.row, this.column - 12, "sumi> sumi> ")
+      this.duplicatePrompt = true
+    end
+    var count = 0
+    var row = 0
+
+    while row < 24
+      if this.matches(row, 0, "> scroll") || this.matches(row, 0, "  scroll")
+        count = count + 1
+      end
+      row = row + 1
+    end
+    if count > this.maxScrollItems
+      this.maxScrollItems = count
+    end
+  end
+
+  private def control(command: Int): Void
+    let amount = this.number == 0 ? 1 : this.number
+
+    if command == 65
+      this.row = this.row - amount
+    else if command == 66
+      this.row = this.row + amount
+    else if command == 67
+      this.column = this.column + amount
+    else if command == 68
+      this.column = this.column - amount
+    else if command == 71
+      this.column = amount - 1
+    else if command == 72 || command == 102
+      this.row = this.first <= 0 ? 0 : this.first - 1
+      this.column = amount - 1
+    else if command == 75 || command == 74
+      var start = this.row * 100 + this.column
+      var finish = command == 75 ? (this.row + 1) * 100 : 2400
+
+      if this.number == 2
+        start = command == 75 ? this.row * 100 : 0
+      else if this.number == 1
+        finish = start + 1
+        start = command == 75 ? this.row * 100 : 0
+      end
+      while start < finish && start < 2400
+        this.cells[start] = 32
+        start = start + 1
+      end
+    end
+    if this.row < 0
+      this.row = 0
+    else if this.row > 23
+      this.row = 23
+    end
+    if this.column < 0
+      this.column = 0
+    else if this.column > 99
+      this.column = 99
+    end
+  end
+
+  def consume(text: String): Void
+    var index = 0
+
+    while index < host::stringByteLength(text)
+      let byte = host::stringByteAt(text, index) as Int
+
+      index = index + 1
+      if this.state == 1
+        this.state = byte == 91 ? 2 : 0
+        this.number = 0
+        this.first = -1
+      else if this.state == 2
+        if byte >= 48 && byte <= 57
+          this.number = this.number * 10 + byte - 48
+        else if byte == 59
+          this.first = this.number
+          this.number = 0
+        else if byte >= 64 && byte <= 126
+          this.control(byte)
+          this.state = 0
+        end
+      else if byte == 27
+        this.state = 1
+      else if byte == 13
+        this.column = 0
+      else if byte == 10
+        this.lineFeed()
+      else if byte == 8
+        if this.column > 0
+          this.column = this.column - 1
+        end
+      else if byte >= 32 && byte < 127
+        if this.column >= 100
+          this.column = 0
+          this.lineFeed()
+        end
+        this.cells[this.row * 100 + this.column] = byte
+        this.column = this.column + 1
+        this.inspect()
+      else if byte >= 192
+        # Non-ASCII menu decoration occupies one placeholder; assertions address
+        # ASCII prompts and identifiers. This is not a Unicode terminal emulator.
+        if this.column < 100
+          this.cells[this.row * 100 + this.column] = 63
+          this.column = this.column + 1
+        end
+      end
+    end
+  end
+end

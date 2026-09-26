@@ -16,3 +16,6 @@ GEMINI.md
 .env
 .env.*
 !.env.example
+
+# Local development lessons
+/docs/lessons/

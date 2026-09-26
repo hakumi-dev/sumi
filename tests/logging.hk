@@ -2,36 +2,228 @@ use sumi
 use sumiweb
 use test
 use console
+use host
+use crypto
+
+def uuidContracts(): Void
+  for fill in [0, 255]
+    let read: fn(Int): crypto::BytesResult = fn(count: Int)
+      var bytes: Byte[] = []
+      var index = 0
+
+      while index < count
+        bytes = host::appendByte(bytes, fill as Byte)
+        index = index + 1
+      end
+      return crypto::BytesResult.success(bytes)
+    end
+    let id = sumiweb::requestIdFrom(new crypto::EntropySource(read))
+
+    test::assertTrue(id != null)
+    if id != null
+      test::assertEqual(id, fill == 0 ? "00000000-0000-4000-8000-000000000000" : "ffffffff-ffff-4fff-bfff-ffffffffffff")
+    end
+  end
+  let failed: fn(Int): crypto::BytesResult = fn(count: Int)
+    return crypto::BytesResult.failed("entropy_failed")
+  end
+
+  test::assertTrue(sumiweb::requestIdFrom(new crypto::EntropySource(failed)) == null)
+end
 
 class RecordedLog
   public levels: String = ""
+  public events: String = ""
+  public formatted: String = ""
+end
+
+def containsText(text: String, part: String): Bool
+  var offset = 0
+
+  while offset + host::stringByteLength(part) <= host::stringByteLength(text)
+    var equal = true
+    var index = 0
+
+    while index < host::stringByteLength(part)
+      if host::stringByteAt(text, offset + index) != host::stringByteAt(part, index)
+        equal = false
+      end
+      index = index + 1
+    end
+    if equal
+      return true
+    end
+    offset = offset + 1
+  end
+  return false
+end
+
+def databaseLoggingContracts(): Void
+  let defaults = new sumiweb::Options()
+
+  test::assertTrue(!defaults.databaseQueries)
+  test::assertEqual(defaults.slowQueryMs, 200)
+  test::assertTrue(defaults.handleInterrupts)
+  test::assertTrue(defaults.stop == null)
+  test::assertTrue(defaults.onShutdown == null)
+  test::assertTrue(defaults.forceExitAfterStopMilliseconds == null)
+  let recorded = new RecordedLog()
+  let options = new sumiweb::Options()
+
+  options.log = fn(event)
+    recorded.levels = recorded.levels + event.level + ";"
+    recorded.events = recorded.events + event.event + ";"
+    recorded.formatted = recorded.formatted + sumiweb::format(event) + "\n"
+  end
+  sumiweb::databaseLog(options, "query", "SELECT 1", 20, 0, 1, 0, 1)
+
+  test::assertEqual(recorded.events, "")
+  options.databaseQueries = true
+  options.minimumLevel = "debug"
+  options.slowQueryMs = 25
+  sumiweb::databaseLog(options, "select", "SELECT name FROM users WHERE id = ?", 20, 1, 1, 0, 1, "", "req-1")
+  sumiweb::databaseLog(options, "update", "UPDATE users SET active = ?", 25, 1, 1, 1, 0)
+  sumiweb::databaseLog(options, "insert", "INSERT INTO users VALUES (?)", 10, 1, 1, 1, 0, "constraint")
+  sumiweb::databaseLog(options, "query", "SELECT 1", 10, 0, 1, 0, 0, "stopped")
+  sumiweb::databaseLog(options, "query", "SELECT 1", 10, 0, 1, 0, 0, "cancelled")
+
+  test::assertEqual(recorded.levels, "debug;warning;error;warning;warning;")
+  test::assertEqual(recorded.events, "database.command.completed;database.command.completed;database.command.failed;database.command.completed;database.command.completed;")
+  test::assertTrue(containsText(recorded.formatted, "request_id=\"req-1\""))
+  test::assertTrue(containsText(recorded.formatted, "parameter_count=1 statement_count=1 affected_count=0 returned_count=1"))
+  test::assertTrue(containsText(recorded.formatted, "code=\"constraint\""))
+  options.minimumLevel = "error"
+  sumiweb::databaseLog(options, "query", "SELECT 1", 10, 0, 1, 0, 0)
+  sumiweb::databaseLog(options, "query", "SELECT 1", 10, 0, 1, 0, 0, "stopped")
+  sumiweb::databaseLog(options, "delete", "DELETE FROM users WHERE id = ?", 10, 1, 1, 1, 0, "constraint")
+
+  test::assertEqual(recorded.levels, "debug;warning;error;warning;warning;error;")
+  options.minimumLevel = "off"
+  sumiweb::databaseLog(options, "delete", "DELETE FROM users", 10, 0, 1, 1, 0, "constraint")
+
+  test::assertEqual(recorded.levels, "debug;warning;error;warning;warning;error;")
+  let control = host::stringFromBytes([27 as Byte])
+
+  test::assertTrue(control != null)
+  if control != null
+    options.minimumLevel = "debug"
+    sumiweb::databaseLog(options, "query", "SELECT" + control + "\n", -1, 0, 1, 0, 0, "", "request")
+  end
+  let event = new sumiweb::LogEvent("database.command.completed")
+
+  event.level = "debug"
+  event.databaseOperation = "query"
+  event.sql = "SELECT 1"
+  event.durationMs = -1
+  event.parameterCount = 2
+  event.statementCount = 1
+  event.affectedCount = 3
+  event.returnedCount = 4
+
+  test::assertTrue(containsText(sumiweb::format(event), " database_operation=\"query\" sql=\"SELECT 1\" parameter_count=2 statement_count=1 affected_count=3 returned_count=4"))
+  test::assertEqual(sumiweb::formatReadable(event, false), "[" + event.timestamp + "] debug SQL query  · n/a  · parameters=2 statements=1 affected=3 returned=4  | \"SELECT 1\"")
+  let httpEvent = new sumiweb::LogEvent("http.request.started")
+
+  test::assertTrue(containsText(sumiweb::format(httpEvent), "write_ms=-1"))
+  test::assertTrue(!containsText(sumiweb::format(httpEvent), "database_operation="))
+  if control != null
+    event.sql = "SELECT" + control + "\n"
+    let readable = sumiweb::formatReadable(event, false)
+
+    test::assertTrue(containsText(readable, " | \"SELECT??\""))
+    test::assertTrue(!containsText(readable, control))
+    test::assertTrue(containsText(recorded.formatted, "level=\"debug\" event=\"database.command.completed\" request_id=\"request\""))
+    test::assertTrue(containsText(recorded.formatted, "sql=\"SELECT??\""))
+  end
 end
 
 def main(): Void
+  uuidContracts()
+  databaseLoggingContracts()
   let recorded = new RecordedLog()
-  let options = new sumiweb.Options()
+  let options = new sumiweb::Options()
+
   options.minimumLevel = "warning"
   options.log = fn(event)
     recorded.levels = recorded.levels + event.level + ";"
   end
 
   for level in ["debug", "info", "warning", "error"]
-    let event = new sumiweb.LogEvent("application.event")
+    let event = new sumiweb::LogEvent("application.event")
+
     event.level = level
-    sumiweb.emit(options, event)
+    sumiweb::emit(options, event)
   end
 
-  test.assertEqual(recorded.levels, "warning;error;")
+  test::assertEqual(recorded.levels, "warning;error;")
 
   options.minimumLevel = "off"
-  let error = new sumiweb.LogEvent("application.failure")
+  let error = new sumiweb::LogEvent("application.failure")
+
   error.level = "error"
-  sumiweb.emit(options, error)
-  test.assertEqual(recorded.levels, "warning;error;")
+  sumiweb::emit(options, error)
+
+  test::assertEqual(recorded.levels, "warning;error;")
 
   options.minimumLevel = "invalid"
-  let rejected = sumiweb.serve(new sumi.App(), "127.0.0.1:0", options)
-  test.assertEqual(rejected.code, "SUMI_LOG_LEVEL")
+  let rejected = sumiweb::serve(new sumi::App(), "127.0.0.1:0", options)
 
-  console.println("Sumi logging contracts passed")
+  test::assertTrue(rejected != null)
+  if rejected != null
+    test::assertEqual(rejected.code, "SUMI_LOG_LEVEL")
+  end
+
+  let escaped = host::stringFromBytes([27 as Byte])
+
+  test::assertTrue(escaped != null)
+  if escaped != null
+    error.message = "untrusted" + escaped + "[31m\nline"
+
+    test::assertEqual(sumiweb::quoted(error.message), "\"untrusted?[31m?line\"")
+  end
+  if !sumiweb::consoleTerminal()
+    test::assertEqual(sumiweb::formatConsole(error), sumiweb::format(error))
+  end
+  let completed = new sumiweb::LogEvent("http.request.completed")
+
+  completed.requestId = "7"
+  completed.method = "GET"
+  completed.route = "/proyectos"
+  completed.durationMs = 6
+  completed.status = 200
+
+  test::assertEqual(sumiweb::formatReadable(completed, false), "[" + completed.timestamp + "] GET  \"/proyectos\"  → 200  · 6ms  #7")
+  completed.readMs = 1
+  completed.appMs = 3
+  completed.writeMs = 0
+
+  test::assertEqual(sumiweb::formatReadable(completed, false), "[" + completed.timestamp + "] GET  \"/proyectos\"  → 200  · 6ms  #7  | read 1ms · app 3ms · send 0ms")
+  completed.event = "http.response.write_failed"
+  completed.code = "SUMI_HTTP_WRITE"
+  completed.message = "incomplete"
+
+  test::assertEqual(sumiweb::formatReadable(completed, false), "[" + completed.timestamp + "] GET  \"/proyectos\"  → 200  · 6ms  SEND FAILED  #7  | read 1ms · app 3ms · send 0ms  | SUMI_HTTP_WRITE — incomplete")
+  completed.event = "http.request.completed"
+  completed.code = ""
+  completed.message = ""
+  let started = new sumiweb::LogEvent("http.request.started")
+
+  started.requestId = "7"
+
+  test::assertEqual(sumiweb::formatReadable(started, false), "[" + started.timestamp + "] request received  #7")
+  test::assertEqual(sumiweb::formatReadable(error, false), "[" + error.timestamp + "] error application.failure  | untrusted?[31m?line")
+  for status in [200, 302, 404, 500]
+    completed.status = status
+    console::println(sumiweb::formatConsole(completed))
+  end
+
+  let missing = new sumiweb::LogEvent("http.request.completed")
+
+  missing.method = "GET"
+  missing.status = 404
+  missing.path = "/missing"
+
+  test::assertEqual(sumiweb::formatReadable(missing, false), "[" + missing.timestamp + "] GET  \"/missing\"  → 404  · 0ms")
+
+  console::println("Sumi logging contracts passed")
 end

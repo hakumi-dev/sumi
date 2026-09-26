@@ -1,8 +1,9 @@
 use sumi
 namespace exampleweb
 
-def application(publicDirectory: String): sumi.App
-  let app = new sumi.App()
+def application(publicDirectory: String): sumi::App
+  let app = new sumi::App()
+
   app.file("/", publicDirectory + "/index.html", "text/html; charset=utf-8")
   app.file("/assets/site.css", publicDirectory + "/site.css", "text/css; charset=utf-8")
   app.file("/assets/site.js", publicDirectory + "/site.js", "text/javascript; charset=utf-8")

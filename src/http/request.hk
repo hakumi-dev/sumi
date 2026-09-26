@@ -1,0 +1,207 @@
+use host
+use arrays
+use sumi
+namespace sumiweb
+
+# Sumi owns method/body parsing; Neri's readHead discards bytes received after
+# the header terminator and its parser accepts only GET/HEAD without a body.
+internal class Incoming
+  public request: sumi::Request?
+  public status: Int = 400
+  public head: Bool = false
+  public length: Int = 0
+end
+
+def parseRequest(header: String): Incoming
+  let parsed = new Incoming()
+  let size = host::stringByteLength(header)
+
+  if size < 4 || size > 8192 || !http::fieldValueLines(header)
+    return parsed
+  end
+  if host::stringSlice(header, size - 4, 4) != "\r\n\r\n"
+    return parsed
+  end
+  let endLine = http::find(header, "\r\n", 0)
+  let firstSpace = http::find(header, " ", 0)
+
+  if firstSpace <= 0 || firstSpace >= endLine
+    return parsed
+  end
+  let method = host::stringSlice(header, 0, firstSpace)
+
+  parsed.head = method == "HEAD"
+  let secondSpace = http::find(header, " ", firstSpace + 1)
+
+  if secondSpace <= firstSpace + 1 || secondSpace >= endLine || !http::token(method)
+    return parsed
+  end
+  let target = host::stringSlice(header, firstSpace + 1, secondSpace - firstSpace - 1)
+
+  if !http::targetValid(target)
+    return parsed
+  end
+  let version = host::stringSlice(header, secondSpace + 1, endLine - secondSpace - 1)
+
+  if host::stringByteLength(version) != 8
+    return parsed
+  end
+  if host::stringSlice(version, 0, 5) != "HTTP/" || host::stringByteAt(version, 6) != (46 as Byte)
+    return parsed
+  end
+  let major = host::stringByteAt(version, 5) as Int
+  let minor = host::stringByteAt(version, 7) as Int
+
+  if major < 48 || major > 57 || minor < 48 || minor > 57
+    return parsed
+  end
+  if version != "HTTP/1.1"
+    parsed.status = 505
+    return parsed
+  end
+  let fields = new http::Headers()
+  var start = endLine + 2
+
+  while start < size - 2
+    let endAt = http::find(header, "\r\n", start)
+
+    if endAt < start
+      return parsed
+    end
+    let field = host::stringSlice(header, start, endAt - start)
+    let colon = http::find(field, ":", 0)
+
+    if colon <= 0
+      return parsed
+    end
+    let name = host::stringSlice(field, 0, colon)
+    let value = http::trim(host::stringSlice(field, colon + 1, host::stringByteLength(field) - colon - 1))
+
+    if !fields.add(name, value)
+      return parsed
+    end
+    start = endAt + 2
+  end
+  let hosts = fields.values("host")
+
+  if hosts.Length != 1
+    return parsed
+  end
+  let authority = hosts[0]
+
+  if authority == "" || http::find(authority, " ", 0) >= 0 || http::find(authority, "\t", 0) >= 0 || http::find(authority, ",", 0) >= 0
+    return parsed
+  end
+  let lengths = fields.values("content-length")
+
+  if lengths.Length > 1 || fields.values("transfer-encoding").Length > 0
+    return parsed
+  end
+  if lengths.Length == 1
+    let value = lengths[0]
+
+    if value == ""
+      return parsed
+    end
+    var length = 0
+    var index = 0
+    var oversized = false
+
+    while index < host::stringByteLength(value)
+      let digit = host::stringByteAt(value, index) as Int
+
+      if digit < 48 || digit > 57
+        return parsed
+      end
+      if !oversized
+        length = length * 10 + digit - 48
+        oversized = length > 1048576
+      end
+      index = index + 1
+    end
+    if oversized
+      parsed.status = 413
+      return parsed
+    end
+    parsed.length = length
+  end
+  if fields.values("expect").Length > 0
+    parsed.status = 417
+    return parsed
+  end
+  if !sumi::supportedMethod(method)
+    parsed.status = 501
+    return parsed
+  end
+  let types = fields.values("content-type")
+
+  if types.Length > 1
+    return parsed
+  end
+  let request = new sumi::Request(method, target)
+
+  request.headers = fields
+  let queryAt = http::find(target, "?", 0)
+
+  if queryAt >= 0
+    request.path = host::stringSlice(target, 0, queryAt)
+    request.query = host::stringSlice(target, queryAt + 1, host::stringByteLength(target) - queryAt - 1)
+  end
+  if types.Length == 1
+    request.contentType = types[0]
+  end
+  parsed.request = request
+  parsed.status = 200
+  return parsed
+end
+
+# The incremental reader owns framing. This wrapper owns socket readiness and the
+# one absolute two-second deadline used by the existing synchronous server.
+def readRequest(fd: Int): Incoming
+  let rejected = new Incoming()
+  let reader = RequestReader.create()
+
+  if reader == null
+    rejected.status = 500
+    return rejected
+  end
+  unsafe
+    let started = http::netMilliseconds()
+
+    if started < 0
+      rejected.status = 500
+      return rejected
+    end
+    let deadline = started + 2000
+    let bytes: Byte[] = arrays::generate(16384) do |index|
+      return 0 as Byte
+    end
+
+    while !reader.isComplete()
+      let failure = http::waitReady(fd, 0, deadline)
+
+      if failure != null
+        rejected.head = reader.head()
+        rejected.status = failure.code == "timeout" ? 408 : 400
+        return rejected
+      end
+      var read = 0
+
+      borrow bytes as pointer
+        read = http::netRead(fd, pointer, bytes.Length)
+      end
+
+      if read == 0 || read == -1
+        rejected.head = reader.head()
+        return rejected
+      end
+      if read > 0
+        reader.feed(bytes, 0, read)
+      end
+    end
+    let completed = reader.outcome()
+
+    return completed if completed != null
+  end
+  return rejected
+end

@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "defaultUnit": "cli",
+  "units": {
+    "core": {"kind": "library", "sources": ["src/core"]},
+    "cli": {"kind": "executable", "sources": ["cli"], "references": ["core", "package-common"]},
+    "package-common": {"kind": "library", "sources": ["tooling/common.hk"]},
+    "package-tool": {"kind": "executable", "sources": ["tooling/package.hk"], "references": ["package-common"]}
+  }
+}

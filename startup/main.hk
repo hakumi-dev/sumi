@@ -1,0 +1,33 @@
+use host
+
+# The packaged build frontend uses Neri's compiler and cache directly. Sumi owns
+# terminal presentation; the compiler reports actual work through callbacks.
+def main(): Void
+  var arguments: String[] = []
+  var index = 0
+
+  while index < host::argumentCount()
+    let argument = host::argumentAt(index)
+
+    arguments = host::appendString(arguments, argument) if argument != null
+    index = index + 1
+  end
+  # Ito calls Neri's build command for run and test too; the CLI marks those
+  # cases so only Sumi build announces an artifact path.
+  if arguments.Length == 0 || arguments[0] != "build" || host::environment("SUMI_COMPILER_QUIET") == "1"
+    arguments = host::appendString(arguments, "--quiet")
+  end
+  var progress: (fn(String, Int, Int): Void)? = null
+  var nativeProgress: (fn(String, Int, Int, String): Void)? = null
+
+  if startupInteractive()
+    progress = fn(phase: String, sources: Int, libraries: Int): Void
+      startupProgress(phase, sources, libraries)
+    end
+    nativeProgress = fn(phase: String, completed: Int, total: Int, detail: String): Void
+      startupNativeProgress(phase, completed, total, detail)
+    end
+  end
+  bootstrapCompile(arguments, null, progress, nativeProgress)
+  clearStartupProgress()
+end

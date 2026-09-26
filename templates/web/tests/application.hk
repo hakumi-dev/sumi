@@ -1,20 +1,32 @@
 use sumi
 use exampleweb
 use test
-use console
 use host
 
-def main(): Void
-  let publicDirectory = host.environment("SUMI_PUBLIC")
+def preparedApp(): sumi::App
+  let publicDirectory = host::environment("SUMI_PUBLIC")
+
   if publicDirectory == null
-    host.exit(1)
-    return
+    host::exit(1)
+    return new sumi::App()
   end
-  let app = exampleweb.application(publicDirectory)
-  test.assertTrue(app.prepare() == null)
-  let response = app.handle(new sumi.Request("GET", "/"))
-  test.assertEqual(response.status, 200)
-  test.assertEqual(response.contentType, "text/html; charset=utf-8")
-  test.assertEqual(app.handle(new sumi.Request("GET", "/missing")).status, 404)
-  console.println("Application contracts passed")
+  let app = exampleweb::application(publicDirectory)
+
+  test::assertTrue(app.prepare() == null)
+  return app
+end
+
+def main(): Void
+  let suite = new test::Suite("Web application")
+
+  suite.add("serves the home page") do |context|
+    let response = preparedApp().handle(new sumi::Request("GET", "/"))
+
+    test::assertEqual(response.status, 200)
+    test::assertEqual(response.contentType, "text/html; charset=utf-8")
+  end
+  suite.add("returns not found for a missing route") do |context|
+    test::assertEqual(preparedApp().handle(new sumi::Request("GET", "/missing")).status, 404)
+  end
+  host::exit(suite.run())
 end

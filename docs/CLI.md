@@ -1,92 +1,94 @@
-# Sumi CLI
+# Commands
 
-The Sumi CLI creates applications and runs their declared Neri units.
-Its command implementation is written in Neri. A shell launcher locates the
-checkout and compiler. The current development installation supports Linux and
-requires Neri, Bash, and GNU `env`, `mkdir`, `cp`, `test`, and `readlink` utilities.
+Run inside an app, or add `--project /path/to/app`.
 
-## Installation
-
-From the framework checkout:
-
-```sh
-scripts/install-cli.sh
-sumi --help
-```
-
-The installer creates `~/.local/bin/sumi` as a link to this checkout. Keep the
-checkout available and include that directory in `PATH`. It refuses to replace
-an unrelated command. `--bin-dir <directory>` selects another command directory.
-You can also use `bin/sumi` directly without installing it.
-
-`NERI` selects the compiler executable; otherwise the launcher uses `neri` from
-`PATH`. Source compilation requires named project units, contextual
-callbacks, managed captures, host process/file operations, and the HTTP and clock
-standard libraries used by the framework. The CLI forwards compiler diagnostics
-and nonzero exit status. A missing compiler produces `SUMI_CLI_COMPILER`.
-Use the [compatibility checker](COMPATIBILITY.md) to verify a selected toolchain
-before starting an application.
-
-## Commands
-
-| Command | Alias | Behavior |
+| Command | Alias | Purpose |
 | --- | --- | --- |
-| `sumi new <directory>` | `sumi n` | Creates a project in a new directory. |
-| `sumi server` | `sumi s` | Compiles and runs the server unit. |
-| `sumi test` | `sumi t` | Compiles and executes the test unit. |
-| `sumi build` | `sumi b` | Builds the server executable. |
-| `sumi console` | `sumi c` | Reserved; returns an explicit unavailable diagnostic. |
+| `sumi new <directory>` | `sumi n` | Create an app in a new directory. |
+| `sumi server` | `sumi s` | Build and run the server. |
+| `sumi test` | `sumi t` | Run the declared app tests. |
+| `sumi build` | `sumi b` | Build `build/application`. |
+| `sumi console` | `sumi c` | Open an application session. |
 
-`console` does not start a shell or a request simulator. A persistent typed
-application session is not currently available. No objects are loaded or evaluated
-when this command returns `SUMI_CONSOLE_UNAVAILABLE`.
+| Option | Applies to | Purpose |
+| --- | --- | --- |
+| `--project <directory>` | server, test, build, console | Select the app. |
+| `--environment <name>`, `-e` | server, test, build, console | Select `development`, `test` or `production`. |
+| `--port <port>` | server | Select a port from 1 to 65535. |
+| `--release` | build, test | Enable optimized compilation. |
+| `--timings` | server, build, test | Show compiler phase timings when supported by the selected toolchain. |
+| `--output <file>` | build | Set an output path relative to the calling directory. |
 
 ```sh
-sumi new my-site
-cd my-site
-sumi t
 sumi s --port 3000
-sumi b --release
+sumi t --release
+sumi b --release --output build/site
 ```
 
-`build` writes `build/application` by default. `--output <file>` selects another
-path, resolved from the caller's working directory. Assets remain separate;
-this command does not produce a complete deployment archive.
+Stop the server with Ctrl-C. Restart after source or asset changes. Builds keep
+assets external; run the executable from the project directory with `public/`
+available. Environment selection and optimization are independent.
+Server, test, and build show one temporary status line on interactive terminals.
+It follows compiler analysis and native code generation, including the current
+function and number processed. The line clears before application output,
+diagnostics, or the built executable path. Redirected output omits routine
+progress. Pass `--timings` to show detailed compiler timings.
 
-`server` starts the local synchronous server in the foreground. Terminal process
-group interruption stops it; there is no graceful drain or automatic reload yet.
-`test` executes the project's declared test program, rather than discovering test
-files by naming convention. `--release` is available for `test` and `build`.
+`sumi test` names the selected test target before compilation and reports the
+overall result and elapsed time afterward. The time includes compilation and
+test execution. Test program output appears as produced, and a failed test run
+keeps its exit status. Projects can define named test cases through Neri's test
+suite API for per-case results; the CLI does not infer case counts from output.
 
-## Project discovery and layout
-
-Commands search the current directory and its parents for `neri.json`.
-`--project <directory>` selects a project explicitly, including from outside it.
-The compiler receives an absolute manifest path, and application processes run
-with the project directory as their working directory.
-
-A new project contains:
+## Console
 
 ```text
-app/routes.hk        Application construction and route registration
-public/              HTML, CSS, and JavaScript
-main.hk               Startup and diagnostic reporting
-tests/application.hk Application contracts
-vendor/sumi/         Framework source snapshot
-neri.json            Named v2 units and references
-sumi.conf            CLI unit and public-directory selection
-.env.example         Example local settings
+sumi c
+sumi> let response = app.handle(new sumi::Request("GET", "/"))
+response: sumi.Response
+sumi> response.status
+=> 200
 ```
 
-`new` copies a source snapshot; subsequent changes in the framework checkout do
-not update existing applications automatically. No database or persistence layer
-is generated. Existing destination directories are rejected without overwriting
-their files. If copying fails after creation, the error is reported and the
-incomplete directory remains available for inspection.
+Variables persist until reset or exit. Every opening creates a new session and
+initializes `app`, without starting the HTTP server. Blocks continue until `end`.
 
-Folder names are suggestions. New `.hk` files are included by their unit source
-directories. Update unit source paths when moving files. The required
-`sumi.conf` uses these keys:
+| Command | Action |
+| --- | --- |
+| `:help` | List commands and keys. |
+| `:cancel` | Discard pending input. |
+| `:reset` | Restart the app and clear variables. |
+| `:exit` | Close the session. |
+
+Enter evaluates. When suggestions are open, Up/Down selects and Tab/Enter inserts;
+Esc closes the list. Function completion adds `()` with the cursor inside.
+With no menu, Up/Down browses history. `NO_COLOR=1` disables colors.
+
+Startup uses one temporary status line on interactive terminals. Native code
+generation shows the current function and the number processed; optimization
+and object emission have separate phases. The line clears before application
+output, diagnostics, and the prompt. Redirected output omits routine progress;
+`NO_COLOR=1` preserves status updates without color.
+
+Custom apps must expose a zero-argument `consoleApp(): sumi::App` function in the
+server unit that constructs and prepares the app. Generated apps include it.
+Reopen the console to load changed application sources. Neri inspects final
+expression values, including public entity fields, enum payloads and bounded
+collection previews. Sumi displays that result without rerunning the expression.
+Database contexts and their configuration come from the application; connection
+lifetime and query execution belong to the Neri Data provider.
+
+## Project selection
+
+Sumi searches the current directory and its parents. At the nearest project root,
+`package.json` takes precedence over `neri.json`. Commands run with the project
+root as their working directory.
+
+Ito manages dependencies and entry points for `package.json` apps. Run
+`ito install --locked` to restore their lockfile; use `ito update sumi` to update
+the framework from its configured origin. `ITO` and `NERI` can select executables.
+
+Generated `neri.json` projects use `sumi.conf` to select units and assets:
 
 ```text
 public=public
@@ -94,74 +96,5 @@ server=web
 test=test
 ```
 
-Keys and values are literal, without surrounding whitespace. Empty lines and
-lines beginning with `#` are ignored. Unknown keys and empty values are errors.
-Repeated keys use the last value. This file configures the CLI; it is not a
-replacement for application-specific configuration.
-
-The CLI passes the selected name via `--unit`.
-
-Multi-source project roots containing non-ASCII characters currently encounter a
-compiler UTF-8 slicing failure on the tested toolchain. Use an ASCII project path
-until that compiler limitation is resolved. Paths containing spaces are supported.
-
-## Environments
-
-`server` defaults to `development`; `test` defaults to `test`; `build` defaults
-to `development`. Select `development`, `test`, or `production` with `SUMI_ENV`
-or `--environment` / `-e`. An explicit option overrides the process variable.
-The environment selection happens before loading files; a value inside a dotenv
-file does not select another environment.
-
-```sh
-sumi s -e production
-SUMI_ENV=test sumi t
-```
-
-Values are resolved in this order, from lowest to highest priority:
-
-1. Application defaults and `sumi.conf` public-directory configuration.
-2. Project `.env`.
-3. Project `.env.<selected-environment>`.
-4. Existing process environment variables, including explicitly empty values.
-5. Explicit CLI options, such as `--port`.
-
-`SUMI_PUBLIC`, when supplied through the environment, overrides `sumi.conf`.
-Relative public paths are resolved against the project directory. The CLI passes
-the effective settings to the application without modifying the parent shell.
-The Neri compiler is chosen by the launcher, not by a dotenv file.
-
-The generated server also loads environment settings when its executable is run
-directly. It defaults to `production` in that case. Files are located relative
-to its working directory. Environment selection does not set compiler optimization;
-use `--release` to request an optimized build.
-
-Dotenv files are optional. Production can use only process variables supplied
-by its service manager. Actual dotenv files are ignored by Git; `.env.example`
-is versioned and should contain examples, never real credentials.
-
-## Dotenv syntax and API
-
-```text
-PORT=8080
-LOG_LEVEL=info
-TITLE="A place for ideas"
-EMPTY=
-# A full-line comment
-```
-
-Names use letters, digits, and underscores and cannot start with a digit.
-Whitespace around names and values is removed. Matching single or double quotes
-preserve the inner value literally. Empty values are supported. Later definitions
-win. Values are single-line; shell execution, variable interpolation, escape
-expansion, `export`, and inline comments are not implemented. A `#` inside a value
-is literal text. NUL values are rejected.
-
-Applications may use `new sumi.Environment(name)`, `load(root)`, and `get(key)`.
-`load` returns `ConfigurationError?` and resets previously loaded file values.
-`get` returns `String?`, checking the process environment before file values.
-Check the load error before consuming settings.
-
-Syntax failures identify the file, line, and variable when known, without its
-value. `SUMI_ENV_NAME`, `SUMI_ENV_READ`, and `SUMI_ENV_SYNTAX` distinguish selection,
-file access, and parsing failures. An invalid configuration prevents startup.
+Their framework copy is not updated automatically. In Ito projects, `sumi.conf`
+is ignored. See [environment configuration](CONFIGURATION.md).

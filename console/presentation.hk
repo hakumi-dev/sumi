@@ -1,0 +1,38 @@
+use host
+
+# Terminal presentation is Sumi policy. It does not change evaluated source.
+def consoleColor(value: String, style: String, prompt: Bool = false): String
+  let disabled = host::environment("NO_COLOR")
+  var interactive = false
+
+  unsafe
+    interactive = consoleTerminal() != 0
+  end
+  if !interactive || (disabled != null && disabled != "")
+    return value
+  end
+  let escape = host::stringFromBytes([27 as Byte])
+
+  if escape == null
+    return value
+  end
+  let opening = escape + "[" + style + "m"
+  let closing = escape + "[0m"
+
+  if prompt
+    let begin = host::stringFromBytes([1 as Byte])
+    let finish = host::stringFromBytes([2 as Byte])
+
+    if begin == null || finish == null
+      return value
+    end
+    # libedit excludes marked escapes from prompt width. Reset after submission:
+    # Apple's editor emits embedded escapes before its buffered prompt text.
+    return begin + opening + finish + value
+  end
+  return opening + value + closing
+end
+
+def consoleError(message: String): String
+  return consoleColor("error", "31") + ": " + message
+end

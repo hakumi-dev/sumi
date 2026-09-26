@@ -1,0 +1,61 @@
+use arrays
+namespace sumi
+
+public class Form
+  private first: FormEntry?
+  private size: Int
+
+  internal def init(first: FormEntry?, size: Int): Void
+    this.first = first
+    this.size = size
+  end
+
+  readonly def count(): Int
+    return this.size
+  end
+
+  readonly def get(name: String): String?
+    var current = this.first
+
+    while current != null
+      if current.name == name
+        return current.value
+      end
+      current = current.next
+    end
+    return null
+  end
+
+  readonly def values(name: String): String[]
+    var current = this.first
+    var count = 0
+
+    while current != null
+      count = count + 1 if current.name == name
+      current = current.next
+    end
+    let values: String[] = arrays::generate(count) do |index|
+      return ""
+    end
+    var index = 0
+
+    current = this.first
+    while current != null
+      if current.name == name
+        values[index] = current.value
+        index = index + 1
+      end
+      current = current.next
+    end
+    return values
+  end
+
+  readonly def each(visit: fn(String, String): Void): Void
+    var current = this.first
+
+    while current != null
+      visit(current.name, current.value)
+      current = current.next
+    end
+  end
+end

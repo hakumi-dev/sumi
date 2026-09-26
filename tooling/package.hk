@@ -1,0 +1,194 @@
+use host
+use console
+use files
+use crypto
+use distribution
+
+# Only build uses the compiler. install/check/console have no path to build.
+def build(root: String, toolchain: Toolchain): Void
+  let compatibility = toolchain.identity()
+  let work = root + "/build/package-work"
+
+  operation(files::createDirectory(root + "/build", true))
+  if files::createDirectory(root + "/build/package.lock").failure != null
+    fail("Package build already running. If interrupted, remove build/package.lock after its process has stopped.")
+  end
+  operation(files::createDirectory(work, true))
+  let source = work + "/source"
+  let package = work + "/package"
+
+  if exists(source)
+    operation(files::removeTree(source))
+  end
+  if exists(package)
+    operation(files::removeTree(package))
+  end
+  operation(files::createDirectory(source))
+  for name in ["cli", "console", "startup", "src", "templates", "tooling", "package.json"]
+    checked("cp", ["-R", root + "/" + name, source + "/" + name])
+  end
+  checked("cp", [source + "/tooling/build-manifest.json", source + "/neri.json"])
+  let sourceManifest = treeManifest(source)
+
+  operation(files::createDirectory(package + "/libexec", true))
+  operation(files::createDirectory(package + "/bin"))
+  for name in ["src", "templates", "package.json"]
+    checked("cp", ["-R", source + "/" + name, package + "/" + name])
+  end
+  checked("cp", [source + "/tooling/sumi-launcher.sh", package + "/bin/sumi"])
+  checked("cp", [source + "/tooling/install-launcher.sh", package + "/install.sh"])
+  checked("chmod", ["+x", package + "/bin/sumi", package + "/install.sh"])
+  # A stable reference path preserves Neri unit object reuse across package builds.
+  operation(files::createDirectory(source + "/build/console", true))
+  checked("ln", ["-s", toolchain.root, source + "/build/console/runtime"])
+  checked(envOr("CC", "cc"), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-c", source + "/console/input.c", "-o", work + "/input.o"])
+  checked(envOr("AR", "ar"), ["rcs", work + "/libsumi-console-input.a", work + "/input.o"])
+  checked(envOr("CC", "cc"), ["-std=c11", "-Wall", "-Wextra", "-Werror", "-c", source + "/startup/progress.c", "-o", work + "/progress.o"])
+  checked(envOr("AR", "ar"), ["rcs", work + "/libsumi-startup.a", work + "/progress.o"])
+  var arguments = toolchain.environment()
+
+  arguments = host::appendString(arguments, "NERI_LIBRARY_PATH=" + work)
+  arguments = host::appendString(arguments, toolchain.command)
+  for argument in ["build", "--project", source + "/console/neri.json", "--release", "--output", package + "/libexec/sumi-console"]
+    arguments = host::appendString(arguments, argument)
+  end
+  console::println("Building Sumi package for " + toolchain.target + " (developer operation)")
+  checked("/usr/bin/env", arguments)
+  var buildArguments = toolchain.environment()
+
+  buildArguments = host::appendString(buildArguments, "NERI_LIBRARY_PATH=" + work)
+  buildArguments = host::appendString(buildArguments, toolchain.command)
+  for argument in ["build", "--project", source + "/startup/neri.json", "--release", "--output", package + "/libexec/sumi-build"]
+    buildArguments = host::appendString(buildArguments, argument)
+  end
+  checked("/usr/bin/env", buildArguments)
+  for unit in ["cli", "package-tool"]
+    checked(toolchain.command, ["build", "--project", source + "/neri.json", "--unit", unit, "--release", "--output", package + "/libexec/" + (unit == "cli" ? "sumi" : "sumi-package")])
+  end
+  write(package + "/SOURCE-MANIFEST.sha256", sourceManifest)
+  if toolchain.identity() != compatibility
+    fail("Neri inputs changed during package construction; retry with an immutable toolchain.")
+  end
+  write(package + "/compatibility.txt", compatibility)
+  checked("cp", [toolchain.root + "/lib/neri-runtime.json", package + "/neri-runtime.json"])
+  write(package + "/ARTIFACTS.sha256", treeManifest(package))
+  verify(package, toolchain)
+  let id = digest(package + "/ARTIFACTS.sha256")
+  let destination = root + "/build/packages/" + id
+
+  operation(files::createDirectory(root + "/build/packages", true))
+  if exists(destination)
+    verify(destination, toolchain)
+    operation(files::removeTree(package))
+  else
+    operation(files::move(package, destination))
+  end
+  checked("tar", ["-czf", work + "/package.tar.gz", "-C", root + "/build/packages", id])
+  operation(files::move(work + "/package.tar.gz", destination + ".tar.gz"))
+  write(work + "/latest-package", destination + "\n")
+  operation(files::move(work + "/latest-package", root + "/build/latest-package"))
+  operation(files::removeDirectory(root + "/build/package.lock"))
+  console::println("Package: " + destination)
+  console::println("Install: " + destination + "/install.sh --prefix <directory>")
+end
+
+def install(package: String, prefix: String, toolchain: Toolchain): Void
+  if prefix == package || startsWith(prefix, package + "/")
+    fail("Installation prefix must be outside the source package.")
+  end
+  verify(package, toolchain)
+  let manifest = textAt(package + "/ARTIFACTS.sha256")
+
+  operation(files::createDirectory(prefix + "/bin", true))
+  operation(files::createDirectory(prefix + "/packages", true))
+  let current = prefix + "/bin/sumi"
+  let old = files::status(current).status
+
+  if old == null
+    fail("Cannot inspect " + current)
+  else if old.exists || old.symlink
+    if !old.symlink
+      fail("Refusing to replace an unrelated command: " + current)
+    end
+    let target = trimLine(capture("readlink", [current]))
+    let expected = prefix + "/packages/"
+
+    if !startsWith(target, expected)
+      fail("Refusing to replace an unrelated symlink: " + current)
+    end
+  end
+  let random = crypto::randomBytes(16).bytes()
+
+  if random == null
+    fail("Cannot allocate an installation generation")
+    return
+  end
+  let suffix = crypto::encodeHex(random)
+
+  if suffix == null
+    fail("Cannot encode installation generation")
+    return
+  end
+  let stage = prefix + "/packages/.stage-" + suffix
+  let destination = prefix + "/packages/" + digest(package + "/ARTIFACTS.sha256") + "-" + suffix
+
+  # Each installer owns its stage; concurrent installers never overwrite a tree.
+  operation(files::createDirectory(stage))
+  checked("cp", ["-R", package + "/.", stage])
+  verify(stage, toolchain)
+  if textAt(stage + "/ARTIFACTS.sha256") != manifest
+    fail("Package changed while installing. Retry from an immutable package.")
+  end
+  operation(files::move(stage, destination))
+  let link = prefix + "/bin/.sumi-" + suffix
+
+  checked("ln", ["-s", destination + "/bin/sumi", link])
+  operation(files::move(link, current))
+  console::println("Installed " + current)
+end
+
+def main(): Void
+  let command = host::argumentAt(0)
+  let package = host::argumentAt(1)
+
+  if command == null || package == null
+    fail("Usage: sumi-package build <checkout> | install <package> --prefix <directory> | check <package> | console <package> <project> <unit>")
+    return
+  end
+  let toolchain = new Toolchain()
+  let root = absolute(package)
+  let option = host::argumentAt(2)
+
+  if command == "build" && host::argumentCount() == 2
+    build(root, toolchain)
+  else if command == "install" && host::argumentCount() == 4 && option != null && option == "--prefix"
+    let prefix = host::argumentAt(3)
+
+    if prefix != null
+      install(root, absolute(prefix), toolchain)
+    end
+  else if command == "check" && host::argumentCount() == 2
+    verify(root, toolchain)
+  else if command == "console" && host::argumentCount() == 4
+    verify(root, toolchain)
+    var arguments = toolchain.environment()
+
+    arguments = host::appendString(arguments, root + "/libexec/sumi-console")
+    for index in [2, 3]
+      let argument = host::argumentAt(index)
+
+      if argument != null
+        arguments = host::appendString(arguments, argument)
+      end
+    end
+    let status = host::run("/usr/bin/env", arguments)
+
+    if status == null
+      host::exit(1)
+    else
+      host::exit(status)
+    end
+  else
+    fail("Invalid package command or arguments")
+  end
+end

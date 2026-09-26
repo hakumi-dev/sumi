@@ -1,0 +1,259 @@
+use result
+use text
+use workers
+namespace sumiweb
+
+# Only ServerSockets owns descriptors. Metadata can outlive removal safely.
+internal class ConcurrentConnection
+  public slotIndex: Int
+  public event: LogEvent
+  public startedAt: Int
+  public requestId: String
+  public incoming: Incoming?
+  public ticket: workers::Ticket?
+  public pollSlot: Int = -1
+  private fd: Int
+  private closed: Bool = false
+  # reading, ready, working, writing, finished
+  private phase: Int = 0
+  private reader: RequestReader?
+  private headers: Byte[] = []
+  private body: Byte[] = []
+  private headerOffset: Int = 0
+  private bodyOffset: Int = 0
+  private writeStartedAt: Int = 0
+
+  private def init(fd: Int, slot: Int, now: Int, requestId: String, reader: RequestReader): Void
+    this.fd = fd
+    this.slotIndex = slot
+    this.startedAt = now
+    this.requestId = requestId
+    this.reader = reader
+    this.event = new LogEvent("http.request.completed")
+    this.event.requestId = requestId
+  end
+
+  internal static unsafe def own(fd: Int, slot: Int, now: Int, requestId: String, reader: RequestReader): ConcurrentConnection
+    return new ConcurrentConnection(fd, slot, now, requestId, reader)
+  end
+
+  def isReading(): Bool
+    return this.phase == 0 && !this.closed
+  end
+
+  def isReady(): Bool
+    return this.phase == 1 && !this.closed
+  end
+
+  def isWorking(): Bool
+    return this.phase == 2 && !this.closed
+  end
+
+  def isWriting(): Bool
+    return this.phase == 3 && !this.closed
+  end
+
+  def isFinished(): Bool
+    return this.phase == 4 || this.closed
+  end
+
+  def markWorking(ticket: workers::Ticket): Void
+    if this.isReady()
+      this.ticket = ticket
+      this.incoming = null
+      this.reader = null
+      this.phase = 2
+    end
+  end
+
+  def setOutput(output: WireResponse, now: Int): Void
+    if !this.isReady() && !this.isWorking()
+      return
+    end
+    this.incoming = null
+    this.reader = null
+    this.headers = text::bytes(output.headers)
+    this.body = output.body
+    this.headerOffset = 0
+    this.bodyOffset = 0
+    this.writeStartedAt = now
+    this.event.status = output.status
+    this.phase = 3
+    if this.headers.Length == 0 && this.body.Length == 0
+      this.finishWrite(now, false)
+    end
+  end
+
+  def deadline(now: Int): Int?
+    var start = this.startedAt
+
+    if this.isWriting()
+      start = this.writeStartedAt
+    else if !this.isReading()
+      return null
+    end
+    if now < start || now - start >= 2000
+      return 0
+    end
+    return 2000 - (now - start)
+  end
+
+  unsafe def register(poll: http::PollSet): Bool
+    this.pollSlot = -1
+    if !this.isReading() && !this.isWriting()
+      return true
+    end
+    let slot = poll.add(this.fd, this.isReading(), this.isWriting())
+
+    if slot == null
+      return false
+    end
+    this.pollSlot = slot
+    return true
+  end
+
+  private def ready(parsed: Incoming, now: Int): Void
+    this.incoming = parsed
+    this.phase = 1
+    this.event.readMs = now >= this.startedAt ? now - this.startedAt : 0
+    let request = parsed.request
+
+    if request != null
+      request.requestId = this.requestId
+      this.event.method = request.method
+      this.event.path = request.path
+    end
+  end
+
+  private def reject(status: Int, now: Int): Void
+    let parsed = new Incoming()
+
+    parsed.status = status
+    let reader = this.reader
+
+    parsed.head = reader.head() if reader != null
+    this.ready(parsed, now)
+  end
+
+  private def finishWrite(now: Int, failed: Bool): Void
+    this.phase = 4
+    this.event.writeMs = now >= this.writeStartedAt ? now - this.writeStartedAt : 0
+    this.event.durationMs = now >= this.startedAt ? now - this.startedAt : 0
+    if failed
+      this.event.event = "http.response.write_failed"
+      this.event.level = "error"
+      this.event.code = "SUMI_HTTP_WRITE"
+      this.event.message = "Socket write failed or exceeded the two-second deadline; response delivery is incomplete"
+    end
+  end
+
+  def advance(poll: http::PollSet, sharedReadBuffer: Byte[], now: Int): Void
+    let remaining = this.deadline(now)
+
+    if remaining != null && remaining == 0
+      if this.isReading()
+        this.reject(408, now)
+      else if this.isWriting()
+        this.finishWrite(now, true)
+      end
+      return
+    end
+    if this.pollSlot < 0
+      return
+    end
+    if this.isReading()
+      if poll.invalid(this.pollSlot)
+        this.reject(400, now)
+        return
+      end
+      if !poll.readable(this.pollSlot) && !poll.failed(this.pollSlot) && !poll.hungUp(this.pollSlot)
+        return
+      end
+      var size = sharedReadBuffer.Length
+
+      if size > 16384
+        size = 16384
+      end
+      if size == 0
+        this.reject(500, now)
+        return
+      end
+      var received = -1
+
+      unsafe
+        borrow sharedReadBuffer as pointer
+          received = http::netRead(this.fd, pointer, size)
+        end
+      end
+      if received == -2
+        return
+      else if received <= 0
+        this.reject(400, now)
+        return
+      end
+      let reader = this.reader
+
+      if reader == null
+        this.reject(500, now)
+        return
+      end
+      reader.feed(sharedReadBuffer, 0, received)
+      let parsed = reader.outcome()
+
+      this.ready(parsed, now) if parsed != null
+    else if this.isWriting()
+      if poll.invalid(this.pollSlot) || poll.failed(this.pollSlot) || poll.hungUp(this.pollSlot)
+        this.finishWrite(now, true)
+        return
+      end
+      if !poll.writable(this.pollSlot)
+        return
+      end
+      let sendingHeaders = this.headerOffset < this.headers.Length
+      let bytes = sendingHeaders ? this.headers : this.body
+      let offset = sendingHeaders ? this.headerOffset : this.bodyOffset
+      var size = bytes.Length - offset
+
+      if size > 16384
+        size = 16384
+      end
+      var written = -1
+
+      unsafe
+        borrow bytes as pointer
+          written = http::netWrite(this.fd, pointer + offset, size)
+        end
+      end
+      if written == -2
+        return
+      else if written <= 0
+        this.finishWrite(now, true)
+        return
+      end
+      if sendingHeaders
+        this.headerOffset = this.headerOffset + written
+      else
+        this.bodyOffset = this.bodyOffset + written
+      end
+      if this.headerOffset == this.headers.Length && this.bodyOffset == this.body.Length
+        this.finishWrite(now, false)
+      end
+    end
+  end
+
+  internal unsafe def closeOwned(): result::Failure?
+    if this.closed
+      return null
+    end
+    this.closed = true
+    this.phase = 4
+    this.pollSlot = -1
+    let fd = this.fd
+
+    this.fd = -1
+    if http::netCloseResult(fd) < 0
+      return new result::Failure("close_failed", "connection.close", http::socketError())
+    end
+    return null
+  end
+end

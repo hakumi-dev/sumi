@@ -49,6 +49,7 @@ def wrapMiddleware(action: fn(Request, fn(Request): Response): Response, next: f
     let response = action(request) do |forwarded|
       return continuation.invoke(forwarded)
     end
+
     return continuation.finish(response)
   end
 end

@@ -1,0 +1,193 @@
+use sumi
+use sumiweb
+use host
+use console
+use resources
+use result
+use workers
+use text
+use test
+use concurrency_tokens_data
+use concurrency_tokens_model
+use neri_data
+use neri_data_sqlite
+
+def readValue(provider: SQLiteProvider): String
+  let db = new ConcurrencyDatabase(provider)
+
+  match db.records.where(id: 1).first()
+    case QueryValue.Value(value)
+      if value != null
+        return value.name + ":" + (value.version as String)
+      end
+    case QueryValue.Failure(error)
+      test::assertTrue(false)
+  end
+  return "missing"
+end
+
+def change(provider: SQLiteProvider, work: String, mode: String): resources::Outcome<sumi::Response, result::Failure>
+  using transaction <- RequestTransaction.open(provider)
+    let db = transaction.database()
+
+    match db.records.where(id: 1).first()
+      case QueryValue.Value(value)
+        test::assertTrue(value != null)
+        if value != null
+          value.name = mode
+          value.version = value.version + 1
+        end
+      case QueryValue.Failure(error)
+        test::assertTrue(false)
+    end
+
+    test::assertTrue(writeSucceeded(db.saveChanges(), 1))
+    if mode != "rollback"
+      test::assertTrue(host::writeText(work + "/" + mode + "-entered", "ready"))
+      test::assertTrue(waitMarker(work + "/" + mode + "-release"))
+    end
+    if mode == "committed"
+      test::assertTrue(transaction.commit())
+      return sumi::text("committed")
+    end
+    # An early response unwinds the request transaction before it is sent.
+    return sumi::text("rolled-back")
+  end
+  return sumi::text("scope failure", 500)
+end
+
+def response(value: resources::Outcome<sumi::Response, result::Failure>): sumi::Response
+  test::assertEqual(value.closeFailures.count(), 0)
+  match value.completion
+    case resources::Completion.Value(reply)
+      return reply
+    case resources::Completion.Failure(error)
+      test::assertTrue(false)
+  end
+  return sumi::text("scope failure", 500)
+end
+
+def serveWorker(work: String): resources::Outcome<Bool, result::Failure>
+  using session <- SQLiteSession.openWritable(work + "/data.sqlite")
+    let provider = session.provider()
+    let app = new sumi::App()
+
+    app.get("/read") do |request|
+      return sumi::text(readValue(provider))
+    end
+    app.get("/hold") do |request|
+      return response(change(provider, work, "committed"))
+    end
+    app.get("/rollback") do |request|
+      return response(change(provider, work, "rollback"))
+    end
+    app.get("/drain") do |request|
+      return response(change(provider, work, "drain"))
+    end
+    app.get("/busy") do |request|
+      let db = new ConcurrencyDatabase(provider)
+
+      match db.beginTransaction()
+        case neri_data::WriteResult.Failure(error)
+          match error
+            case WriteFailure.Transaction(message)
+              return sumi::text("busy", 409)
+            case WriteFailure.Concurrency(message)
+            case WriteFailure.Constraint(message)
+            case WriteFailure.Provider(message)
+            case WriteFailure.Unsupported(message)
+            case WriteFailure.Validation(message)
+          end
+        case neri_data::WriteResult.Saved(count)
+          db.rollbackTransaction()
+        case neri_data::WriteResult.SavedWithValues(count, outputs)
+      end
+      return sumi::text("expected writer lock", 500)
+    end
+    let ran = try sumiweb::runWorker(app)
+
+    return ran
+  end
+  return false
+end
+
+def complete(value: resources::Outcome<Bool, result::Failure>): Void
+  test::assertEqual(value.closeFailures.count(), 0)
+  match value.completion
+    case resources::Completion.Value(success)
+      test::assertTrue(success)
+    case resources::Completion.Failure(error)
+      test::assertTrue(false)
+  end
+end
+
+def workerEntry(config: Byte[]): Void
+  let work = host::stringFromBytes(config)
+
+  test::assertTrue(work != null)
+  if work != null
+    complete(serveWorker(work))
+    console::println("DATA_WORKER_CLOSED")
+  end
+end
+
+def database(work: String, verify: Bool): resources::Outcome<Bool, result::Failure>
+  let path = work + "/data.sqlite"
+
+  using session <- SQLiteSession.createWritable(path)
+    let db = new ConcurrencyDatabase(session.provider())
+
+    if verify
+      test::assertEqual(readValue(session.provider()), "committed:2")
+      test::assertTrue(writeSucceeded(db.beginTransaction(), 0))
+      test::assertTrue(writeSucceeded(db.commitTransaction(), 0))
+    else
+      let columns = [new SchemaColumn("id", SchemaType.Int(), primaryKey: true), new SchemaColumn("name", SchemaType.Text()), new SchemaColumn("note", SchemaType.Text(), nullable: true), new SchemaColumn("revision", SchemaType.Int())]
+      let migration = new Migration("records", [SchemaOp.CreateTable("records", columns)], [SchemaOp.DropTable("records")])
+
+      match session.provider().migrate(new MigrationSet([migration]))
+        case MigrationResult.Applied(count)
+          test::assertEqual(count, 1)
+        case MigrationResult.Failure(error)
+          test::assertTrue(false)
+      end
+
+      test::assertTrue(db.records.add(new Record(1, "initial", null, 1)) == null)
+      test::assertTrue(writeSucceeded(db.saveChanges(), 1))
+    end
+    return true
+  end
+  return false
+end
+
+def main(): Void
+  let work = host::environment("SUMI_TEST_WORK")
+  let port = host::environment("PORT")
+
+  test::assertTrue(work != null && port != null)
+  if work == null || port == null
+    return
+  end
+  let verifying = host::environment("MODE") == "verify"
+
+  complete(database(work, verifying))
+  if verifying
+    return
+  end
+  let options = new sumiweb::ConcurrentOptions()
+
+  options.workerCount = 2
+  options.maxOutstanding = 16
+  options.maxConnections = 16
+  options.forceExitAfterStopMilliseconds = 5000
+  options.onListening = fn(address)
+    console::println("READY")
+  end
+  options.onShutdown = fn()
+    console::println("DATA_SHUTDOWN")
+  end
+  let error = sumiweb::serveConcurrent(workerEntry, text::bytes(work), "127.0.0.1:" + port, options)
+
+  test::assertTrue(error == null)
+  console::println("DATA_EXIT")
+end

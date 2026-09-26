@@ -1,0 +1,31 @@
+use result
+namespace sumiweb
+
+# Unwinding a failed listener acquisition requests shutdown before the outer
+# worker pool closes, so the attached lifetime bounds worker cleanup too.
+internal resource class ServerAcquisition
+  private stop: http::Stop
+  private armed: Bool = true
+
+  private def init(stop: http::Stop): Void
+    this.stop = stop
+  end
+
+  static def open(stop: http::Stop): ServerAcquisition
+    let acquisition = new ServerAcquisition(stop)
+
+    return transfer acquisition
+  end
+
+  def disarm(): Void
+    this.armed = false
+  end
+
+  def close(): result::Failure?
+    if this.armed
+      this.armed = false
+      this.stop.request()
+    end
+    return null
+  end
+end

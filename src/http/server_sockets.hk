@@ -1,0 +1,179 @@
+use arrays
+use result
+namespace sumiweb
+
+resource class ServerSockets
+  private listener: Int
+  private connections: ConcurrentConnection?[]
+  private occupied: Int = 0
+  private closed: Bool = false
+
+  private def init(listener: Int, connections: ConcurrentConnection?[]): Void
+    this.listener = listener
+    this.connections = connections
+  end
+
+  static def open(port: Int, maxConnections: Int): result::Result<ServerSockets, result::Failure>
+    if port < 1 || port > 65535 || maxConnections < 1 || maxConnections > 1024
+      return result::Result<ServerSockets, result::Failure>.Error(new result::Failure("invalid_argument", "server.open", "Expected port 1..65535 and maxConnections 1..1024"))
+    end
+    let connections = arrays::generate<ConcurrentConnection?>(maxConnections) do |index|
+      return null
+    end
+
+    unsafe
+      let fd = http::netOpen()
+
+      if fd < 0
+        return result::Result<ServerSockets, result::Failure>.Error(new result::Failure("socket_error", "listen.open", http::socketError()))
+      end
+      var operation = ""
+
+      if http::netConfigure(fd) < 0
+        operation = "listen.configure"
+      else if http::netBind(fd, port) < 0
+        operation = "listen.bind"
+      else if http::netListen(fd) < 0
+        operation = "listen.listen"
+      end
+      if operation != ""
+        let failure = new result::Failure("socket_error", operation, http::socketError())
+
+        ServerSockets.closeFailed(fd, failure)
+        return result::Result<ServerSockets, result::Failure>.Error(failure)
+      end
+      let owned = new ServerSockets(fd, connections)
+
+      return result::Result<ServerSockets, result::Failure>.Ok(transfer owned)
+    end
+  end
+
+  private static unsafe def closeFailed(fd: Int, failure: result::Failure): Void
+    if http::netCloseResult(fd) < 0
+      failure.closeFailure = new result::Failure("close_failed", "socket.close", http::socketError())
+    end
+  end
+
+  def count(): Int
+    return this.occupied
+  end
+
+  def capacity(): Int
+    return this.connections.Length
+  end
+
+  def at(index: Int): ConcurrentConnection?
+    if index < 0 || index >= this.connections.Length
+      return null
+    end
+    return this.connections[index]
+  end
+
+  def hasCapacity(): Bool
+    return !this.closed && this.listener >= 0 && this.occupied < this.connections.Length
+  end
+
+  unsafe def listenerHandle(): Int
+    return this.listener
+  end
+
+  def accept(now: Int): result::Result<ConcurrentConnection?, result::Failure>
+    if !this.hasCapacity()
+      return result::Result<ConcurrentConnection?, result::Failure>.Ok(null)
+    end
+    var slot = 0
+
+    while slot < this.connections.Length && this.connections[slot] != null
+      slot = slot + 1
+    end
+    unsafe
+      let fd = http::netAccept(this.listener)
+
+      if fd == -2
+        return result::Result<ConcurrentConnection?, result::Failure>.Ok(null)
+      else if fd < 0
+        return result::Result<ConcurrentConnection?, result::Failure>.Error(new result::Failure("socket_error", "listen.accept", http::socketError()))
+      end
+      if http::netConfigure(fd) < 0
+        let failure = new result::Failure("socket_error", "connection.configure", http::socketError())
+
+        ServerSockets.closeFailed(fd, failure)
+        return result::Result<ConcurrentConnection?, result::Failure>.Error(failure)
+      end
+      let requestId = newRequestId()
+
+      if requestId == null
+        let failure = new result::Failure("unavailable", "connection.requestId", "Cannot obtain secure request ID entropy")
+
+        ServerSockets.closeFailed(fd, failure)
+        return result::Result<ConcurrentConnection?, result::Failure>.Error(failure)
+      end
+      let reader = RequestReader.create()
+
+      if reader == null
+        let failure = new result::Failure("unavailable", "connection.reader", "Cannot allocate request reader")
+
+        ServerSockets.closeFailed(fd, failure)
+        return result::Result<ConcurrentConnection?, result::Failure>.Error(failure)
+      end
+      let connection = ConcurrentConnection.own(fd, slot, now, requestId, reader)
+
+      this.connections[slot] = connection
+      this.occupied = this.occupied + 1
+      return result::Result<ConcurrentConnection?, result::Failure>.Ok(connection)
+    end
+  end
+
+  def remove(index: Int): result::Failure?
+    let connection = this.at(index)
+
+    if connection == null
+      return null
+    end
+    this.connections[index] = null
+    this.occupied = this.occupied - 1
+    unsafe
+      return connection.closeOwned()
+    end
+  end
+
+  def stopListening(): result::Failure?
+    if this.listener < 0
+      return null
+    end
+    let fd = this.listener
+
+    this.listener = -1
+    unsafe
+      if http::netCloseResult(fd) < 0
+        return new result::Failure("close_failed", "listen.close", http::socketError())
+      end
+    end
+    return null
+  end
+
+  def close(): result::Failure?
+    if this.closed
+      return null
+    end
+    this.closed = true
+    var first = this.stopListening()
+    var last = first
+    var index = 0
+
+    while index < this.connections.Length
+      let failure = this.remove(index)
+
+      if failure != null
+        if last != null
+          last.closeFailure = failure
+        else
+          first = failure
+        end
+        last = failure
+      end
+      index = index + 1
+    end
+    return first
+  end
+end

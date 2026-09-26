@@ -1,0 +1,180 @@
+use buffers
+namespace sumiweb
+
+# Bounded, clock-free framing state. Its caller owns read readiness and the
+# absolute deadline. Completion stops consuming the supplied chunk because Sumi
+# sends one response and closes the connection.
+internal class RequestReader
+  private header: buffers::ByteBuffer
+  private body: buffers::ByteBuffer?
+  private ending: Int = 0
+  private headPrefix: Bool = true
+  private pending: Incoming?
+  private completed: Incoming?
+
+  private def init(header: buffers::ByteBuffer): Void
+    this.header = header
+  end
+
+  static def create(): RequestReader?
+    let header = buffers::ByteBuffer.create(8192, 1024)
+
+    if header == null
+      return null
+    end
+    return new RequestReader(header)
+  end
+
+  def isComplete(): Bool
+    return this.completed != null
+  end
+
+  def outcome(): Incoming?
+    return this.completed
+  end
+
+  def head(): Bool
+    return this.header.length() >= 5 && this.headPrefix
+  end
+
+  # Returns only bytes incorporated into this one-request reader. A caller can
+  # discard the suffix after completion because the connection is not persistent.
+  def feed(bytes: Byte[], offset: Int = 0, count: Int = -1): Int
+    if this.completed != null
+      return 0
+    end
+    if offset < 0 || offset > bytes.Length || count < -1 || (count >= 0 && count > bytes.Length - offset)
+      this.reject(400)
+      return 0
+    end
+    var available = bytes.Length - offset
+
+    available = count if count >= 0
+    var consumed = 0
+
+    while consumed < available && this.completed == null
+      let body = this.body
+
+      if body == null
+        this.acceptHeader(bytes[offset + consumed])
+        consumed = consumed + 1
+      else
+        let remaining = body.limit() - body.length()
+        let take = remaining < available - consumed ? remaining : available - consumed
+
+        if !body.appendSlice(bytes, offset + consumed, take)
+          this.reject(413)
+          return consumed
+        end
+        consumed = consumed + take
+        this.finishBody() if body.length() == body.limit()
+      end
+    end
+    return consumed
+  end
+
+  private def acceptHeader(value: Byte): Void
+    let byte = value as Int
+
+    if byte > 126 || (byte < 32 && byte != 9 && byte != 10 && byte != 13)
+      this.reject(400)
+      return
+    end
+    if !this.header.append(value)
+      this.reject(431)
+      return
+    end
+    this.updateHeadPrefix(value)
+    if (this.ending == 0 || this.ending == 2) && byte == 13
+      this.ending = this.ending + 1
+    else if (this.ending == 1 || this.ending == 3) && byte == 10
+      this.ending = this.ending + 1
+    else
+      this.ending = byte == 13 ? 1 : 0
+    end
+    if this.ending == 4
+      this.finishHeader()
+    else if this.header.length() == 8192
+      this.reject(431)
+    end
+  end
+
+  private def updateHeadPrefix(value: Byte): Void
+    let position = this.header.length() - 1
+    var expected = 0
+
+    if position == 0
+      expected = 72
+    else if position == 1
+      expected = 69
+    else if position == 2
+      expected = 65
+    else if position == 3
+      expected = 68
+    else if position == 4
+      expected = 32
+    end
+    this.headPrefix = false if position < 5 && (value as Int) != expected
+  end
+
+  private def finishHeader(): Void
+    let text = this.header.text()
+
+    if text == null
+      this.reject(400)
+      return
+    end
+    let parsed = parseRequest(text)
+    let request = parsed.request
+
+    parsed.head = true if this.head()
+    if request == null
+      this.completed = parsed
+      return
+    end
+    let body = buffers::ByteBuffer.create(parsed.length, parsed.length)
+
+    if body == null
+      this.reject(500)
+      return
+    end
+    this.body = body
+    if parsed.length == 0
+      request.body = body.snapshot()
+      this.completed = parsed
+    else
+      this.pending = parsed
+    end
+  end
+
+  private def finishBody(): Void
+    let body = this.body
+
+    if body == null
+      this.reject(400)
+      return
+    end
+    let parsed = this.pending
+
+    if parsed == null
+      this.reject(400)
+      return
+    end
+    let request = parsed.request
+
+    if request == null
+      this.reject(400)
+      return
+    end
+    request.body = body.snapshot()
+    this.completed = parsed
+  end
+
+  private def reject(status: Int): Void
+    let rejected = new Incoming()
+
+    rejected.status = status
+    rejected.head = this.head()
+    this.completed = rejected
+  end
+end
