@@ -33,21 +33,12 @@ the object cache reuses unchanged native code, including modules with shared
 native libraries.
 Each new console process still analyzes the application's source and types.
 
-## Building and testing Sumi
+## Building Sumi
 
 Use the installed Neri toolchain's compiler prerequisites, a C compiler and
-libedit headers/library. Verification also needs Bash 4+, curl and GNU coreutils'
-`timeout` or `gtimeout`. On macOS, `brew install bash coreutils` supplies the latter
-tools; place Homebrew's `bin` directory before `/bin` in `PATH`.
-
-```sh
-scripts/check-compatibility.sh --compile-only
-scripts/check-compatibility.sh
-```
-
-`NERI=/path/to/neri` selects a toolchain. The full check runs HTTP and application
-contracts, starts temporary loopback listeners and verifies their shutdown.
-See [Contributing](../CONTRIBUTING.md) for package construction and focused tests.
+libedit headers/library. `NERI=/path/to/neri` selects a toolchain.
+See [package construction](../CONTRIBUTING.md#build-and-install) for building and
+installing Sumi against that toolchain.
 
 The server's functional limits are listed in [HTTP](HTTP.md).
 
@@ -60,6 +51,5 @@ executable receipt; it does not reuse a console JIT module.
 
 Executable receipts and the native object cache currently require macOS ARM64.
 Linux supports dependency semantic/native snapshots and secure file metadata,
-but recompiles and links the application on repeated startup. The startup
-contracts query the runtime cache capability and verify the corresponding
-reuse or recompilation behavior. Linux end-to-end validation remains pending.
+but recompiles and links the application on repeated startup.
+Linux end-to-end validation remains pending.
