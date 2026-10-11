@@ -47,7 +47,10 @@ while kill -0 "$SUMI_TEST_PID" 2>/dev/null; do
 done
 wait "$SUMI_TEST_PID"
 SUMI_TEST_PID=""
-[[ "$(grep -c '^DATA_WORKER_CLOSED$' "$SUMI_TEST_WORK/server.log")" == 2 ]] || fail 'worker sessions did not close'
+if [[ "$(grep -c '^DATA_WORKER_CLOSED$' "$SUMI_TEST_WORK/server.log")" != 2 ]]; then
+  cat "$SUMI_TEST_WORK/server.log" >&2
+  fail 'worker sessions did not close'
+fi
 [[ "$(tail -n 2 "$SUMI_TEST_WORK/server.log")" == $'DATA_SHUTDOWN\nDATA_EXIT' ]] || fail 'shutdown ran before session cleanup'
 MODE=verify "$server"
 printf 'Sumi Data concurrent HTTP contracts passed\n'

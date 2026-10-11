@@ -146,7 +146,7 @@ def workerEntry(config: Byte[]): Void
   test::assertTrue(work != null)
   if work != null
     complete(serveWorker(work))
-    console::println("DATA_WORKER_CLOSED")
+    console::print("DATA_WORKER_CLOSED\n")
   end
 end
 
