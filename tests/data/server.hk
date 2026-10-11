@@ -15,7 +15,7 @@ use neri_data_sqlite
 def readValue(provider: SQLiteProvider): String
   let db = new ConcurrencyDatabase(provider)
 
-  match db.records.where(id: 1).first()
+  match db.records.where(id: 1).firstOrDefault()
     case QueryValue.Value(value)
       if value != null
         return value.name + ":" + (value.version as String)
@@ -30,7 +30,7 @@ def change(provider: SQLiteProvider, work: String, mode: String): resources::Out
   using transaction <- RequestTransaction.open(provider)
     let db = transaction.database()
 
-    match db.records.where(id: 1).first()
+    match db.records.where(id: 1).firstOrDefault()
       case QueryValue.Value(value)
         test::assertTrue(value != null)
         if value != null

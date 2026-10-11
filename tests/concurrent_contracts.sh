@@ -154,7 +154,9 @@ status=0
 PORT="$SUMI_TEST_PORT" SUMI_TEST_WORK="$SUMI_TEST_WORK" MODE=startup-failure timeout 10 "$fixture" > "$SUMI_TEST_WORK/startup.log" 2>&1 || status=$?
 [[ "$status" == 1 ]] || fail "expected worker preparation failure exit 1, got $status"
 grep -qF 'worker prepare failed' "$SUMI_TEST_WORK/startup.log"
-[[ "$(grep -c '^WORKER_PREPARE_FAILURE$' "$SUMI_TEST_WORK/startup.log")" == 2 ]] || fail 'not all workers reported preparation failure'
+# The first failure can stop the pool before the other worker reports.
+preparation_failures="$(grep -c '^WORKER_PREPARE_FAILURE$' "$SUMI_TEST_WORK/startup.log")"
+[[ "$preparation_failures" == 1 || "$preparation_failures" == 2 ]] || fail 'worker preparation failure was not reported'
 if curl --silent --max-time 1 "http://127.0.0.1:$PORT/fast" >/dev/null 2>&1; then
   fail 'listener opened after worker preparation failure'
 fi
