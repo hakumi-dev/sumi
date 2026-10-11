@@ -154,10 +154,10 @@ def main(): Void
   end
   let options = new sumiweb::Options()
 
-  options.onListening = fn(address)
+  options.onListening = fn(address) do
     console::println("READY")
   end
-  options.log = fn(event)
+  options.log = fn(event) do
     console::println(sumiweb::format(event))
   end
   let port = host::environment("PORT")

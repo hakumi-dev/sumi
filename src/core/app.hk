@@ -62,7 +62,10 @@ public class App
         if closed != null
           detail = detail + "; close: " + closed.code + " (OS " + (closed.osCode as String) + ")"
         end
-        this.error = new ConfigurationError("Cannot read static file " + source + " for route " + path + ": " + detail, cause.code == "limit_exceeded" ? "SUMI_STATIC_SIZE" : "SUMI_STATIC_READ")
+        this.error = new ConfigurationError(
+          "Cannot read static file " + source + " for route " + path + ": " + detail,
+          cause.code == "limit_exceeded" ? "SUMI_STATIC_SIZE" : "SUMI_STATIC_READ"
+        )
       case result::Result.Ok(body)
         this.get(path) do |request|
           return binary(copyBody(body), contentType)
@@ -85,7 +88,7 @@ public class App
       return null
     end
     let router = this.router
-    var pipeline: fn(Request): Response = fn(request)
+    var pipeline: fn(Request): Response = fn(request) do
       return router.dispatch(request)
     end
     var middleware = this.middleware

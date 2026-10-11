@@ -5,7 +5,7 @@ public class Form
   private first: FormEntry?
   private size: Int
 
-  internal def init(first: FormEntry?, size: Int): Void
+  def init(first: FormEntry?, size: Int): Void
     this.first = first
     this.size = size
   end

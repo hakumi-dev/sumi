@@ -19,7 +19,7 @@ resource class RequestTransaction
   private context: ConcurrencyDatabase
   private finished: Bool = false
 
-  private def init(context: ConcurrencyDatabase): Void
+  def init(context: ConcurrencyDatabase): Void
     this.context = context
   end
 
@@ -27,7 +27,10 @@ resource class RequestTransaction
     let db = new ConcurrencyDatabase(provider)
 
     if !writeSucceeded(db.beginTransaction(), 0)
-      return result::Result<RequestTransaction, result::Failure>.Error(new result::Failure("begin_failed", "request.transaction"))
+      return result::Result<RequestTransaction, result::Failure>.Error(new result::Failure(
+          "begin_failed",
+          "request.transaction"
+        ))
     end
     let owned = new RequestTransaction(db)
 

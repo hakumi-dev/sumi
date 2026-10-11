@@ -12,7 +12,7 @@ internal class RequestReader
   private pending: Incoming?
   private completed: Incoming?
 
-  private def init(header: buffers::ByteBuffer): Void
+  def init(header: buffers::ByteBuffer): Void
     this.header = header
   end
 

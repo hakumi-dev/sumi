@@ -146,7 +146,7 @@ def workerEntry(config: Byte[]): Void
   test::assertTrue(work != null)
   if work != null
     complete(serveWorker(work))
-    console::println("DATA_WORKER_CLOSED")
+    console::print("DATA_WORKER_CLOSED\n")
   end
 end
 
@@ -161,8 +161,17 @@ def database(work: String, verify: Bool): resources::Outcome<Bool, ProviderFailu
       test::assertTrue(writeSucceeded(db.beginTransaction(), 0))
       test::assertTrue(writeSucceeded(db.commitTransaction(), 0))
     else
-      let columns = [new SchemaColumn("id", SchemaType.Int(), primaryKey: true), new SchemaColumn("name", SchemaType.Text()), new SchemaColumn("note", SchemaType.Text(), nullable: true), new SchemaColumn("revision", SchemaType.Int())]
-      let migration = new Migration("records", [SchemaOp.CreateTable("records", columns)], [SchemaOp.DropTable("records")])
+      let columns = [
+        new SchemaColumn("id", SchemaType.Int(), primaryKey: true),
+        new SchemaColumn("name", SchemaType.Text()),
+        new SchemaColumn("note", SchemaType.Text(), nullable: true),
+        new SchemaColumn("revision", SchemaType.Int())
+      ]
+      let migration = new Migration(
+        "records",
+        [SchemaOp.CreateTable("records", columns)],
+        [SchemaOp.DropTable("records")]
+      )
 
       match session.provider().migrate(new MigrationSet([migration]))
         case MigrationResult.Applied(count)
@@ -199,10 +208,10 @@ def main(): Void
   options.maxOutstanding = 16
   options.maxConnections = 16
   options.forceExitAfterStopMilliseconds = 5000
-  options.onListening = fn(address)
+  options.onListening = fn(address) do
     console::println("READY")
   end
-  options.onShutdown = fn()
+  options.onShutdown = fn() do
     console::println("DATA_SHUTDOWN")
   end
   let error = sumiweb::serveConcurrent(workerEntry, text::bytes(work), "127.0.0.1:" + port, options)

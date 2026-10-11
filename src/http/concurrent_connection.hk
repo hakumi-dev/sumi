@@ -23,7 +23,7 @@ internal class ConcurrentConnection
   private bodyOffset: Int = 0
   private writeStartedAt: Int = 0
 
-  private def init(fd: Int, slot: Int, now: Int, requestId: String, reader: RequestReader): Void
+  def init(fd: Int, slot: Int, now: Int, requestId: String, reader: RequestReader): Void
     this.fd = fd
     this.slotIndex = slot
     this.startedAt = now
@@ -33,7 +33,13 @@ internal class ConcurrentConnection
     this.event.requestId = requestId
   end
 
-  internal static unsafe def own(fd: Int, slot: Int, now: Int, requestId: String, reader: RequestReader): ConcurrentConnection
+  internal static unsafe def own(
+    fd: Int,
+    slot: Int,
+    now: Int,
+    requestId: String,
+    reader: RequestReader
+  ): ConcurrentConnection
     return new ConcurrentConnection(fd, slot, now, requestId, reader)
   end
 

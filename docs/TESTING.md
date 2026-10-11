@@ -42,18 +42,6 @@ The generated application includes named route tests. Existing executables
 containing only `main` and assertions still run, but only their unit-level result
 is available. Sumi cannot infer case names or counts from ordinary console text.
 
-## Framework contracts
-
-From a Sumi checkout, `bash scripts/test.sh` validates Debug and Release.
-Use `bash scripts/test.sh debug` or `bash scripts/test.sh release` to select one
-configuration. Set `SUMI_TEST_REUSE_PACKAGE=1` to validate and reuse the binary
-package recorded in `build/latest-package` instead of building another package.
-Rebuild the package after changing packaged sources.
-Container-based verification requires an init process, such as
-Docker's `--init`, to reap orphaned children during process-group shutdown tests.
-CLI startup contracts allow time for compilation; prepared server fixtures keep
-their separate readiness and shutdown deadlines.
-
 ## Responsibilities and references
 
 Neri owns case registration, execution, isolation and reporting. Ito resolves the

@@ -40,7 +40,7 @@ ignores incoming request IDs. This is request correlation, not distributed traci
 ```neri
 let options = new sumiweb::Options()
 options.minimumLevel = "info"
-options.log = fn(event)
+options.log = fn(event) do
   sumiweb::logConsole(event)
 end
 ```
