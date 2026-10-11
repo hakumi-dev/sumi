@@ -57,7 +57,12 @@ def partialClient(work: String): Bool
       return false
     end
     let deadline = http::netMilliseconds() + 2000
-    let partial = http::writePayloadResult(fd, "POST /partial HTTP/1.1\r\nHost: localhost\r\nContent-Length: 32\r\n\r\npartial", null, deadline)
+    let partial = http::writePayloadResult(
+      fd,
+      "POST /partial HTTP/1.1\r\nHost: localhost\r\nContent-Length: 32\r\n\r\npartial",
+      null,
+      deadline
+    )
 
     if partial.failure != null
       http::netClose(fd)
@@ -178,7 +183,7 @@ def main(): Void
   options.startupTimeoutMilliseconds = 150 if mode == "startup-slow"
   options.forceExitAfterStopMilliseconds = 150 if mode == "cleanup-slow" || mode == "handler-slow"
   if mode == "slow-log"
-    options.log = fn(event)
+    options.log = fn(event) do
       if event.event == "http.request.started"
         let polling = http::PollSet.create(0)
 
@@ -190,10 +195,10 @@ def main(): Void
       end
     end
   end
-  options.onListening = fn(address)
+  options.onListening = fn(address) do
     console::println("READY")
   end
-  options.onShutdown = fn()
+  options.onShutdown = fn() do
     console::println("SHUTDOWN_LAST")
   end
   let error = sumiweb::serveConcurrent(workerEntry, text::bytes(work), "127.0.0.1:" + port, options)

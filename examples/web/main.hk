@@ -72,11 +72,11 @@ def main(): Void
 
   options.minimumLevel = logLevel if logLevel != null
 
-  options.onListening = fn(address)
+  options.onListening = fn(address) do
     console::println("Sumi listening on http://" + address)
   end
 
-  options.log = fn(event)
+  options.log = fn(event) do
     sumiweb::logConsole(event)
   end
 

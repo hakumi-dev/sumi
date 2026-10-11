@@ -62,12 +62,12 @@ def main(): Void
     options.forceExitAfterStopMilliseconds = 0
   end
   stop.request() if mode == "prestopped"
-  options.onListening = fn(address)
+  options.onListening = fn(address) do
     console::println("READY")
   end
   if mode == "signal-on-dispatch"
     options.minimumLevel = "debug"
-    options.log = fn(event)
+    options.log = fn(event) do
       if event.event == "http.request.dispatching"
         console::println("DISPATCH_SIGNAL")
         unsafe
@@ -78,7 +78,7 @@ def main(): Void
       end
     end
   end
-  options.onShutdown = fn()
+  options.onShutdown = fn() do
     console::println("SHUTDOWN_START")
     spin(mode == "deadline" ? 5000 : 300)
     console::println("SHUTDOWN_END")
