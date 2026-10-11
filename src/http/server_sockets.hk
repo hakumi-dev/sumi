@@ -8,14 +8,18 @@ resource class ServerSockets
   private occupied: Int = 0
   private closed: Bool = false
 
-  private def init(listener: Int, connections: ConcurrentConnection?[]): Void
+  def init(listener: Int, connections: ConcurrentConnection?[]): Void
     this.listener = listener
     this.connections = connections
   end
 
   static def open(port: Int, maxConnections: Int): result::Result<ServerSockets, result::Failure>
     if port < 1 || port > 65535 || maxConnections < 1 || maxConnections > 1024
-      return result::Result<ServerSockets, result::Failure>.Error(new result::Failure("invalid_argument", "server.open", "Expected port 1..65535 and maxConnections 1..1024"))
+      return result::Result<ServerSockets, result::Failure>.Error(new result::Failure(
+          "invalid_argument",
+          "server.open",
+          "Expected port 1..65535 and maxConnections 1..1024"
+        ))
     end
     let connections = arrays::generate<ConcurrentConnection?>(maxConnections) do |index|
       return null
@@ -25,7 +29,11 @@ resource class ServerSockets
       let fd = http::netOpen()
 
       if fd < 0
-        return result::Result<ServerSockets, result::Failure>.Error(new result::Failure("socket_error", "listen.open", http::socketError()))
+        return result::Result<ServerSockets, result::Failure>.Error(new result::Failure(
+            "socket_error",
+            "listen.open",
+            http::socketError()
+          ))
       end
       var operation = ""
 
@@ -92,7 +100,11 @@ resource class ServerSockets
       if fd == -2
         return result::Result<ConcurrentConnection?, result::Failure>.Ok(null)
       else if fd < 0
-        return result::Result<ConcurrentConnection?, result::Failure>.Error(new result::Failure("socket_error", "listen.accept", http::socketError()))
+        return result::Result<ConcurrentConnection?, result::Failure>.Error(new result::Failure(
+            "socket_error",
+            "listen.accept",
+            http::socketError()
+          ))
       end
       if http::netConfigure(fd) < 0
         let failure = new result::Failure("socket_error", "connection.configure", http::socketError())
@@ -103,7 +115,11 @@ resource class ServerSockets
       let requestId = newRequestId()
 
       if requestId == null
-        let failure = new result::Failure("unavailable", "connection.requestId", "Cannot obtain secure request ID entropy")
+        let failure = new result::Failure(
+          "unavailable",
+          "connection.requestId",
+          "Cannot obtain secure request ID entropy"
+        )
 
         ServerSockets.closeFailed(fd, failure)
         return result::Result<ConcurrentConnection?, result::Failure>.Error(failure)

@@ -7,7 +7,7 @@ internal resource class ServerAcquisition
   private stop: http::Stop
   private armed: Bool = true
 
-  private def init(stop: http::Stop): Void
+  def init(stop: http::Stop): Void
     this.stop = stop
   end
 
