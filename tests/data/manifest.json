@@ -12,8 +12,8 @@
       "references": [
         "barrier",
         {"project": "../../neri.json", "unit": "http"},
-        {"project": "../../../neri/experiments/neri-data/concurrency-tokens/manifest.json", "unit": "data"},
-        {"project": "../../../neri/experiments/neri-data/providers/sqlite/manifest.json", "unit": "sqlite"}
+        {"project": "../../../neri/tests/data/concurrency-tokens/manifest.json", "unit": "data"},
+        {"project": "../../../neri/packages/data/providers/sqlite/manifest.json", "unit": "sqlite"}
       ]
     },
     "driver": {
